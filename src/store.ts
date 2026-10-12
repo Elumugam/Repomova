@@ -4,6 +4,18 @@
 import { create } from 'zustand';
 import type { ConnectedApp, OpenTab, UserProfile, Theme, AppStatus } from './types';
 
+function getInitialSidebarCollapsed(): boolean {
+  try {
+    const saved = localStorage.getItem('repomova-sidebar-collapsed');
+    if (saved !== null) {
+      return saved === 'true';
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+  return true; // Collapsed by default in a fresh session
+}
+
 interface WorkspaceState {
   // ---- Theme ----
   theme: Theme;
@@ -14,8 +26,15 @@ interface WorkspaceState {
   sidebarOpen: boolean;
   sidebarCollapsed: boolean;
   setSidebarOpen: (open: boolean) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   toggleSidebarCollapse: () => void;
+
+  // ---- Workspace Loading & Error State ----
+  appsLoading: boolean;
+  appsError: string | null;
+  setAppsLoading: (loading: boolean) => void;
+  setAppsError: (error: string | null) => void;
 
   // ---- Auth ----
   user: UserProfile | null;
@@ -64,10 +83,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   // Sidebar
   sidebarOpen: false,
-  sidebarCollapsed: false,
+  sidebarCollapsed: getInitialSidebarCollapsed(),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  setSidebarCollapsed: (collapsed) => {
+    try {
+      localStorage.setItem('repomova-sidebar-collapsed', String(collapsed));
+    } catch {
+      // Ignore localStorage errors
+    }
+    set({ sidebarCollapsed: collapsed });
+  },
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-  toggleSidebarCollapse: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  toggleSidebarCollapse: () =>
+    set((s) => {
+      const next = !s.sidebarCollapsed;
+      try {
+        localStorage.setItem('repomova-sidebar-collapsed', String(next));
+      } catch {
+        // Ignore localStorage errors
+      }
+      return { sidebarCollapsed: next };
+    }),
+
+  // Loading & error
+  appsLoading: false,
+  appsError: null,
+  setAppsLoading: (loading) => set({ appsLoading: loading }),
+  setAppsError: (error) => set({ appsError: error }),
 
   // Auth
   user: null,

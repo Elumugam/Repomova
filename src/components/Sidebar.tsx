@@ -57,55 +57,76 @@ export function Sidebar() {
         />
       )}
 
-      <aside className={sidebarClass}>
+      <aside className={sidebarClass} aria-label="Main Navigation">
         {/* Header */}
         <div className="sidebar-header">
-          <img
-            src="/repomova-icon.png"
-            alt="Repomova"
-            className="sidebar-logo"
-          />
-          {!sidebarCollapsed && (
-            <span className="sidebar-brand">Repomova</span>
+          {!sidebarCollapsed ? (
+            <div className="sidebar-brand-group">
+              <img
+                src="/repomova-icon.png"
+                alt="Repomova"
+                className="sidebar-logo"
+              />
+              <span className="sidebar-brand">Repomova</span>
+            </div>
+          ) : (
+            <img
+              src="/repomova-icon.png"
+              alt="Repomova"
+              className="sidebar-logo"
+            />
           )}
-          <div style={{ marginLeft: 'auto' }}>
-            <button
-              className="btn btn-icon btn-ghost btn-sm"
-              onClick={toggleSidebarCollapse}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            >
-              {sidebarCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
-            </button>
-          </div>
+
+          <button
+            className="btn btn-icon btn-ghost btn-sm sidebar-collapse-btn"
+            onClick={toggleSidebarCollapse}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!sidebarCollapsed}
+          >
+            {sidebarCollapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
+          </button>
         </div>
 
         {/* Nav */}
         <nav className="sidebar-nav">
-          {navItems.map((item) => (
-            <button
-              key={item.view}
-              className={`sidebar-item ${activeView === item.view ? 'active' : ''}`}
-              onClick={() => {
-                setActiveView(item.view);
-                setSidebarOpen(false);
-              }}
-            >
-              <item.icon size={18} className="sidebar-item-icon" />
-              {!sidebarCollapsed && (
-                <>
-                  <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
-                  {item.count !== undefined && item.count > 0 && (
-                    <span className="badge" style={{
-                      background: 'var(--color-bg-tertiary)',
-                      color: 'var(--color-text-tertiary)',
-                    }}>
-                      {item.count}
-                    </span>
-                  )}
-                </>
-              )}
-            </button>
-          ))}
+          {navItems.map((item) => {
+            const tooltipText = item.count !== undefined && item.count > 0
+              ? `${item.label} (${item.count})`
+              : item.label;
+
+            return (
+              <button
+                key={item.view}
+                className={`sidebar-item ${activeView === item.view ? 'active' : ''}`}
+                title={sidebarCollapsed ? tooltipText : undefined}
+                aria-label={tooltipText}
+                aria-current={activeView === item.view ? 'page' : undefined}
+                onClick={() => {
+                  setActiveView(item.view);
+                  setSidebarOpen(false);
+                }}
+              >
+                <item.icon size={18} className="sidebar-item-icon" />
+                {!sidebarCollapsed && (
+                  <>
+                    <span style={{ flex: 1, textAlign: 'left' }}>{item.label}</span>
+                    {item.count !== undefined && item.count > 0 && (
+                      <span
+                        className="badge"
+                        style={{
+                          background: 'var(--color-bg-tertiary)',
+                          color: 'var(--color-text-tertiary)',
+                        }}
+                      >
+                        {item.count}
+                      </span>
+                    )}
+                  </>
+                )}
+              </button>
+            );
+          })}
 
           {/* Running Apps */}
           {runningApps.length > 0 && !sidebarCollapsed && (
@@ -161,6 +182,8 @@ export function Sidebar() {
           <button
             className="sidebar-item"
             style={{ marginTop: 'var(--space-2)' }}
+            title={sidebarCollapsed ? 'Connect Repository' : undefined}
+            aria-label="Connect Repository"
             onClick={() => setConnectModalOpen(true)}
           >
             <Plus size={18} className="sidebar-item-icon" />
@@ -172,18 +195,27 @@ export function Sidebar() {
         <div className="sidebar-footer">
           <button
             className="sidebar-item"
+            title={sidebarCollapsed ? (theme === 'light' ? 'Dark Mode' : 'Light Mode') : undefined}
+            aria-label={theme === 'light' ? 'Dark Mode' : 'Light Mode'}
             onClick={toggleTheme}
           >
             {theme === 'light' ? <Moon size={18} className="sidebar-item-icon" /> : <Sun size={18} className="sidebar-item-icon" />}
             {!sidebarCollapsed && <span style={{ textAlign: 'left' }}>{theme === 'light' ? 'Dark Mode' : 'Light Mode'}</span>}
           </button>
 
-          {!sidebarCollapsed && user && (
-            <button className="sidebar-item" onClick={() => setActiveView('settings')}>
+          {user && (
+            <button
+              className="sidebar-item"
+              title={sidebarCollapsed ? (user.displayName || user.email) : undefined}
+              aria-label={user.displayName || user.email}
+              onClick={() => setActiveView('settings')}
+            >
               <User size={18} className="sidebar-item-icon" />
-              <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {user.displayName || user.email}
-              </span>
+              {!sidebarCollapsed && (
+                <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {user.displayName || user.email}
+                </span>
+              )}
             </button>
           )}
         </div>
