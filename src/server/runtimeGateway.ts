@@ -1,0 +1,901 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import net from 'node:net';
+import crypto from 'node:crypto';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { Plugin, ViteDevServer } from 'vite';
+import type { RuntimeType, AppStatus, DetectedEnvVar } from '../types.ts';
+
+const execAsync = promisify(exec);
+
+// Running processes and servers
+export interface RunningAppInstance {
+  appId: string;
+  port: number;
+  server?: http.Server;
+  runtimeType: RuntimeType;
+  startedAt: string;
+  servedDir?: string;
+}
+
+export interface FrameworkDetectionResult {
+  runtimeType: RuntimeType;
+  details: string;
+  serveDir?: string;
+  entryFile?: string;
+  hasBuildScript?: boolean;
+  needsBuild?: boolean;
+  noWebEntry?: boolean;
+  startCommand?: string;
+  buildCommand?: string;
+  commandSources?: {
+    startCommand?: string;
+    buildCommand?: string;
+  };
+  detectedEnvVars?: DetectedEnvVar[];
+}
+
+export interface HealthCheckResult {
+  healthy: boolean;
+  status?: number;
+  contentType?: string;
+  reason?: string;
+}
+
+// Global Registries
+export const appPortRegistry = new Map<string, number>(); // appId -> port
+export const runningInstances = new Map<string, RunningAppInstance>(); // appId -> RunningAppInstance
+
+// Check if a specific TCP port is in use on 127.0.0.1
+export async function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const tester = net.createServer();
+    tester.once('error', (err: unknown) => {
+      if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === 'EADDRINUSE') {
+        resolve(true);
+      } else {
+        resolve(true);
+      }
+    });
+    tester.once('listening', () => {
+      tester.close(() => {
+        resolve(false);
+      });
+    });
+    tester.listen(port, '127.0.0.1');
+  });
+}
+
+// Dynamically allocate a free port for an app
+export async function allocateFreePort(appId: string, preferredPort?: number): Promise<number> {
+  // If app already has a running instance, reuse its port
+  const existingInstance = runningInstances.get(appId);
+  if (existingInstance && existingInstance.port) {
+    return existingInstance.port;
+  }
+
+  // If a valid preferred port was provided, check if it's free
+  if (preferredPort && preferredPort >= 1024 && preferredPort <= 65535) {
+    let inRegistryByOther = false;
+    for (const [id, p] of appPortRegistry.entries()) {
+      if (id !== appId && p === preferredPort) {
+        inRegistryByOther = true;
+        break;
+      }
+    }
+    for (const [id, inst] of runningInstances.entries()) {
+      if (id !== appId && inst.port === preferredPort) {
+        inRegistryByOther = true;
+        break;
+      }
+    }
+
+    if (!inRegistryByOther && !(await isPortInUse(preferredPort))) {
+      appPortRegistry.set(appId, preferredPort);
+      return preferredPort;
+    }
+  }
+
+  // Gather all reserved ports across all apps
+  const reservedPorts = new Set<number>();
+  for (const [id, p] of appPortRegistry.entries()) {
+    if (id !== appId) reservedPorts.add(p);
+  }
+  for (const [id, inst] of runningInstances.entries()) {
+    if (id !== appId && inst.port) reservedPorts.add(inst.port);
+  }
+
+  // Scan ephemeral range 4101..4999
+  for (let port = 4101; port <= 4999; port++) {
+    if (!reservedPorts.has(port)) {
+      const inUse = await isPortInUse(port);
+      if (!inUse) {
+        appPortRegistry.set(appId, port);
+        return port;
+      }
+    }
+  }
+
+  // Fallback: bind to port 0 on 127.0.0.1
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as net.AddressInfo;
+      const assigned = addr.port;
+      server.close(() => {
+        appPortRegistry.set(appId, assigned);
+        resolve(assigned);
+      });
+    });
+    server.on('error', reject);
+  });
+}
+
+// Release port from registry
+export function releaseAppPort(appId: string): void {
+  appPortRegistry.delete(appId);
+}
+
+// Search for index.html at root, dist, build, public, docs, out, etc.
+export function findEntryPoint(dir: string): { entryFile: string; serveDir: string; relativeDir: string } | null {
+  if (!fs.existsSync(dir)) return null;
+
+  const candidates = [
+    '',
+    'dist',
+    'build',
+    'public',
+    'docs',
+    'out',
+    'www',
+    'site',
+    'client',
+    'frontend',
+  ];
+
+  for (const sub of candidates) {
+    const candidateDir = sub ? path.join(dir, sub) : dir;
+    const indexPath = path.join(candidateDir, 'index.html');
+    if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile()) {
+      return {
+        entryFile: 'index.html',
+        serveDir: candidateDir,
+        relativeDir: sub || '.',
+      };
+    }
+  }
+
+  return null;
+}
+
+// Parse .env.example / .env.sample without inventing fake credentials
+export function parseEnvExample(dir: string): DetectedEnvVar[] {
+  const candidates = ['.env.example', '.env.sample', 'sample.env', '.env.template'];
+  for (const candidate of candidates) {
+    const file = path.join(dir, candidate);
+    if (fs.existsSync(file)) {
+      try {
+        const content = fs.readFileSync(file, 'utf8');
+        const lines = content.split('\n');
+        const vars: DetectedEnvVar[] = [];
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eqIdx = trimmed.indexOf('=');
+          const key = eqIdx > 0 ? trimmed.slice(0, eqIdx).trim() : trimmed;
+          if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+
+          const isSecret = /(KEY|SECRET|PASSWORD|TOKEN|AUTH|PRIVATE|CREDENTIAL)/i.test(key);
+          const rawVal = eqIdx > 0 ? trimmed.slice(eqIdx + 1).trim() : '';
+          const required = !rawVal && !trimmed.toLowerCase().includes('optional');
+
+          vars.push({
+            key,
+            required,
+            isSecret,
+            description: `Specified in ${candidate}`,
+          });
+        }
+        if (vars.length > 0) return vars;
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return [];
+}
+
+// Inspect and detect framework & entry points in cloned directory
+export function detectFramework(dir: string): FrameworkDetectionResult {
+  if (!fs.existsSync(dir)) {
+    return { runtimeType: 'unknown', details: 'Directory does not exist' };
+  }
+
+  const detectedEnvVars = parseEnvExample(dir);
+  const pkgJsonPath = path.join(dir, 'package.json');
+  const entry = findEntryPoint(dir);
+
+  // 1. Check package.json projects
+  if (fs.existsSync(pkgJsonPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const scripts = (pkg.scripts || {}) as Record<string, string>;
+
+      let runtimeType: RuntimeType = 'node';
+      let details = 'Node.js application';
+
+      if (allDeps['next']) {
+        runtimeType = 'nextjs';
+        details = 'Next.js application';
+      } else if (allDeps['vite']) {
+        runtimeType = 'vite';
+        details = 'Vite application';
+      } else if (allDeps['react'] || allDeps['react-scripts']) {
+        runtimeType = 'react';
+        details = 'React application';
+      }
+
+      const hasDev = Boolean(scripts.dev);
+      const hasStart = Boolean(scripts.start);
+      const hasBuild = Boolean(scripts.build);
+
+      const startCommand = hasDev ? 'npm run dev' : hasStart ? 'npm start' : 'node index.js';
+      const startSource = hasDev
+        ? "Detected from package.json 'scripts.dev'"
+        : hasStart
+        ? "Detected from package.json 'scripts.start'"
+        : 'Default Node.js entry point';
+
+      const buildCommand = hasBuild ? 'npm run build' : undefined;
+      const buildSource = hasBuild ? "Detected from package.json 'scripts.build'" : undefined;
+
+      const serveDir = entry ? entry.serveDir : dir;
+      const needsBuild = hasBuild && !entry;
+
+      return {
+        runtimeType,
+        details,
+        serveDir,
+        entryFile: entry ? entry.entryFile : undefined,
+        hasBuildScript: hasBuild,
+        needsBuild,
+        startCommand,
+        buildCommand,
+        commandSources: {
+          startCommand: startSource,
+          buildCommand: buildSource,
+        },
+        detectedEnvVars,
+      };
+    } catch {
+      return { runtimeType: 'node', details: 'Node.js application', detectedEnvVars, serveDir: dir };
+    }
+  }
+
+  // 2. Static site detection: entry point found (index.html at root, dist, build, public, docs)
+  if (entry) {
+    const locDesc = entry.relativeDir === '.' ? 'root' : `${entry.relativeDir}/`;
+    return {
+      runtimeType: 'static',
+      details: `Static HTML5 website (entry file: ${locDesc}index.html)`,
+      serveDir: entry.serveDir,
+      entryFile: entry.entryFile,
+      startCommand: 'Built-in Static Server',
+      buildCommand: 'None (Static files)',
+      commandSources: {
+        startCommand: `Auto-configured: serving ${locDesc} via built-in static server`,
+        buildCommand: 'Auto-configured: plain HTML site requires no build step',
+      },
+      detectedEnvVars,
+    };
+  }
+
+  // 3. Python detection
+  if (
+    fs.existsSync(path.join(dir, 'requirements.txt')) ||
+    fs.existsSync(path.join(dir, 'pyproject.toml')) ||
+    fs.existsSync(path.join(dir, 'app.py')) ||
+    fs.existsSync(path.join(dir, 'main.py'))
+  ) {
+    const entryPy = fs.existsSync(path.join(dir, 'main.py')) ? 'python main.py' : 'python app.py';
+    return {
+      runtimeType: 'python',
+      details: 'Python application',
+      serveDir: dir,
+      startCommand: entryPy,
+      commandSources: {
+        startCommand: 'Detected from Python repository structure',
+      },
+      detectedEnvVars,
+    };
+  }
+
+  // 4. Docker detection
+  if (fs.existsSync(path.join(dir, 'Dockerfile')) || fs.existsSync(path.join(dir, 'docker-compose.yml'))) {
+    const isCompose = fs.existsSync(path.join(dir, 'docker-compose.yml'));
+    return {
+      runtimeType: 'docker',
+      details: 'Docker containerized application',
+      serveDir: dir,
+      startCommand: isCompose ? 'docker compose up' : 'docker build & run',
+      commandSources: {
+        startCommand: `Detected from ${isCompose ? 'docker-compose.yml' : 'Dockerfile'}`,
+      },
+      detectedEnvVars,
+    };
+  }
+
+  // 5. Native desktop / compiled application without web entry point (e.g., Cubes2: main.c, makefile, compile.sh)
+  if (
+    fs.existsSync(path.join(dir, 'makefile')) ||
+    fs.existsSync(path.join(dir, 'Makefile')) ||
+    fs.existsSync(path.join(dir, 'CMakeLists.txt')) ||
+    fs.existsSync(path.join(dir, 'main.c')) ||
+    fs.existsSync(path.join(dir, 'main.cpp'))
+  ) {
+    return {
+      runtimeType: 'unknown',
+      details: 'Native desktop application (C/C++ makefile project, no web entry point)',
+      serveDir: dir,
+      noWebEntry: true,
+      detectedEnvVars,
+    };
+  }
+
+  return {
+    runtimeType: 'unknown',
+    details: 'No web entry file found (index.html missing in root, dist, build, public, docs)',
+    serveDir: dir,
+    noWebEntry: true,
+    detectedEnvVars,
+  };
+}
+
+// Compute lockfile hash for caching
+export function computeLockfileHash(dir: string): string | null {
+  const candidates = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'requirements.txt'];
+  for (const candidate of candidates) {
+    const file = path.join(dir, candidate);
+    if (fs.existsSync(file)) {
+      const content = fs.readFileSync(file);
+      return crypto.createHash('sha256').update(content).digest('hex');
+    }
+  }
+  return null;
+}
+
+// Real HTTP health check on port: requires HTTP 200 with HTML content!
+export async function performHttpHealthCheck(
+  url: string,
+  maxRetries = 15,
+  intervalMs = 200
+): Promise<HealthCheckResult> {
+  let lastStatus: number | undefined;
+  let lastReason: string | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Repomova-HealthCheck/1.0',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+
+      lastStatus = res.status;
+      const contentType = res.headers.get('content-type') || '';
+
+      if (res.status === 200) {
+        const text = await res.text();
+        const isHtml =
+          contentType.includes('text/html') ||
+          text.toLowerCase().includes('<!doctype html') ||
+          text.toLowerCase().includes('<html');
+
+        if (isHtml) {
+          return { healthy: true, status: 200, contentType };
+        } else {
+          lastReason = `HTTP 200 returned non-HTML (${contentType || 'plain text'})`;
+        }
+      } else if (res.status === 404) {
+        lastReason = `HTTP 404 Not Found (entry file missing in served directory)`;
+      } else if (res.status >= 500) {
+        lastReason = `HTTP ${res.status} Server Error`;
+      } else {
+        lastReason = `HTTP ${res.status} response`;
+      }
+    } catch (err: unknown) {
+      lastReason = err instanceof Error ? err.message : 'Connection refused';
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  return { healthy: false, status: lastStatus, reason: lastReason || 'Health check failed' };
+}
+
+// MIME types for static server
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+};
+
+// Start static file server for static sites
+export function startStaticServer(dir: string, port: number): Promise<http.Server> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      // Relax framing headers so iframe can embed
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('X-Frame-Options', 'ALLOWALL');
+      res.setHeader('Content-Security-Policy', "frame-ancestors 'self' *");
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      let reqPath = decodeURIComponent(req.url?.split('?')[0] || '/');
+      // Strip any gateway prefix if request passed through proxy (/preview/:appId/...)
+      reqPath = reqPath.replace(/^\/(?:api\/)?preview\/[^/]+/, '');
+      if (!reqPath || reqPath === '') {
+        reqPath = '/';
+      }
+
+      if (reqPath.endsWith('/')) {
+        reqPath += 'index.html';
+      }
+
+      let filePath = path.join(dir, reqPath);
+
+      // Security check: ensure path is inside dir
+      if (!filePath.startsWith(dir)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Forbidden');
+        return;
+      }
+
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(filePath, 'index.html');
+      }
+
+      if (!fs.existsSync(filePath)) {
+        const fallback = path.join(dir, 'index.html');
+        if (fs.existsSync(fallback)) {
+          filePath = fallback;
+        } else {
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end(`Not Found: No file or index.html at ${reqPath} in ${dir}`);
+          return;
+        }
+      }
+
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+      res.writeHead(200, { 'Content-Type': contentType });
+      const stream = fs.createReadStream(filePath);
+      stream.pipe(res);
+      stream.on('error', () => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        }
+        res.end();
+      });
+    });
+
+    server.on('error', (err) => {
+      reject(err);
+    });
+
+    server.listen(port, '127.0.0.1', () => {
+      resolve(server);
+    });
+  });
+}
+
+// Stop a running app instance and release its port
+export function stopAppInstance(appId: string): boolean {
+  const instance = runningInstances.get(appId);
+  if (!instance) {
+    releaseAppPort(appId);
+    return false;
+  }
+
+  if (instance.server) {
+    try {
+      if (typeof (instance.server as unknown as { closeAllConnections?: () => void }).closeAllConnections === 'function') {
+        (instance.server as unknown as { closeAllConnections: () => void }).closeAllConnections();
+      }
+      instance.server.close();
+    } catch {
+      // ignore
+    }
+  }
+  runningInstances.delete(appId);
+  releaseAppPort(appId);
+  return true;
+}
+
+// Get running app instance info
+export function getAppInstance(appId: string): RunningAppInstance | undefined {
+  return runningInstances.get(appId);
+}
+
+/**
+ * Vite Dev Server Plugin that integrates the Runtime & Preview Gateway
+ */
+export function runtimeGatewayPlugin(): Plugin {
+  return {
+    name: 'repomova-runtime-gateway',
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url || '';
+
+        // Health check endpoint
+        if (url.startsWith('/api/health')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok', runningApps: runningInstances.size }));
+          return;
+        }
+
+        // Preview gateway proxy: /preview/:appId/*
+        if (url.startsWith('/preview/')) {
+          const match = url.match(/^\/preview\/([^/?]+)(.*)/);
+          if (match) {
+            const targetAppId = match[1];
+            const subPath = match[2] || '/';
+            const instance = runningInstances.get(targetAppId);
+            if (instance) {
+              const proxyReq = http.request({
+                host: '127.0.0.1',
+                port: instance.port,
+                path: subPath,
+                method: req.method,
+                headers: {
+                  ...req.headers,
+                  host: `127.0.0.1:${instance.port}`,
+                },
+              }, (proxyRes) => {
+                res.writeHead(proxyRes.statusCode || 200, {
+                  ...proxyRes.headers,
+                  'X-Frame-Options': 'ALLOWALL',
+                  'Content-Security-Policy': "frame-ancestors 'self' *",
+                });
+                proxyRes.pipe(res);
+              });
+              proxyReq.on('error', () => {
+                res.writeHead(502, { 'Content-Type': 'text/plain' });
+                res.end('Bad Gateway: App server not reachable');
+              });
+              req.pipe(proxyReq);
+              return;
+            } else {
+              res.writeHead(404, { 'Content-Type': 'text/plain' });
+              res.end(`App ${targetAppId} is not currently running`);
+              return;
+            }
+          }
+        }
+
+        // Port availability check endpoint: /api/ports/check?port=...&appId=...
+        if (url.startsWith('/api/ports/check')) {
+          const parsedUrl = new URL(url, 'http://127.0.0.1:5173');
+          const portStr = parsedUrl.searchParams.get('port') || '';
+          const checkAppId = parsedUrl.searchParams.get('appId') || '';
+          const portNum = parseInt(portStr, 10);
+
+          if (isNaN(portNum) || portNum < 1024 || portNum > 65535) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ port: portNum, available: false, reason: 'Port must be between 1024 and 65535' }));
+            return;
+          }
+
+          // If this port is already assigned to the same app, it's valid
+          const existingPort = appPortRegistry.get(checkAppId);
+          if (existingPort === portNum) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ port: portNum, available: true }));
+            return;
+          }
+
+          // Check if used by another app in the registry
+          let inRegistry = false;
+          for (const [id, p] of appPortRegistry.entries()) {
+            if (id !== checkAppId && p === portNum) {
+              inRegistry = true;
+              break;
+            }
+          }
+
+          const inUse = inRegistry || (await isPortInUse(portNum));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            port: portNum,
+            available: !inUse,
+            reason: inUse ? `Port ${portNum} is currently in use` : undefined,
+          }));
+          return;
+        }
+
+        // Framework Detection & Clone Endpoint
+        if (url.startsWith('/api/apps/detect') && req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', async () => {
+            try {
+              const { appId, repoUrl, repoName } = JSON.parse(body || '{}');
+              const repoDir = path.resolve(process.cwd(), '.repomova', 'repos', appId || repoName);
+
+              // If directory does not exist, do shallow clone
+              if (!fs.existsSync(repoDir) && repoUrl) {
+                fs.mkdirSync(path.dirname(repoDir), { recursive: true });
+                await execAsync(`git clone --depth 1 ${repoUrl} "${repoDir}"`);
+              }
+
+              const detection = detectFramework(repoDir);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                appId,
+                runtimeType: detection.runtimeType,
+                details: detection.details,
+                serveDir: detection.serveDir,
+                entryFile: detection.entryFile,
+                startCommand: detection.startCommand,
+                buildCommand: detection.buildCommand,
+                commandSources: detection.commandSources,
+                detectedEnvVars: detection.detectedEnvVars,
+                noWebEntry: detection.noWebEntry,
+                cloned: fs.existsSync(repoDir),
+              }));
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: msg }));
+            }
+          });
+          return;
+        }
+
+        // SSE Real-Time Launch Stream: /api/apps/launch/events
+        if (url.startsWith('/api/apps/launch/events')) {
+          const parsedUrl = new URL(url, 'http://127.0.0.1:5173');
+          const appId = parsedUrl.searchParams.get('appId') || '';
+          const repoUrl = parsedUrl.searchParams.get('repoUrl') || '';
+          const repoName = parsedUrl.searchParams.get('repoName') || 'app';
+          const preferredPortStr = parsedUrl.searchParams.get('port');
+          const preferredPort = preferredPortStr ? parseInt(preferredPortStr, 10) : undefined;
+
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          });
+
+          const sendEvent = (event: string, data: Record<string, unknown>) => {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          };
+
+          const repoDir = path.resolve(process.cwd(), '.repomova', 'repos', appId || repoName);
+          let currentServeDir = repoDir;
+          let currentCommand = 'Built-in Static Server';
+
+          try {
+            // IDEMPOTENCY CHECK: If this app is already running and healthy, reuse it!
+            const existing = runningInstances.get(appId);
+            if (existing && existing.server) {
+              const healthCheck = await performHttpHealthCheck(`http://127.0.0.1:${existing.port}`, 2, 100);
+              if (healthCheck.healthy) {
+                sendEvent('ready', {
+                  stage: 'ready',
+                  status: 'running' as AppStatus,
+                  port: existing.port,
+                  previewUrl: `http://127.0.0.1:${existing.port}`,
+                  runtimeType: existing.runtimeType,
+                  servedDir: existing.servedDir || repoDir,
+                  reused: true,
+                });
+                res.end();
+                return;
+              }
+              // If stale or failed, clean it up before relaunching
+              stopAppInstance(appId);
+            }
+
+            sendEvent('stage', { stage: 'authorizing', message: 'Authorizing workspace...' });
+
+            const cacheDir = path.resolve(process.cwd(), '.repomova', 'cache');
+            fs.mkdirSync(cacheDir, { recursive: true });
+
+            sendEvent('stage', { stage: 'cloning', message: 'Performing shallow clone...' });
+            if (!fs.existsSync(repoDir)) {
+              fs.mkdirSync(path.dirname(repoDir), { recursive: true });
+              await execAsync(`git clone --depth 1 ${repoUrl} "${repoDir}"`);
+            }
+
+            // Independent parallel verification: allocate unique free port & verify git
+            sendEvent('stage', { stage: 'verifying', message: 'Verifying repository integrity...' });
+            const [port] = await Promise.all([
+              allocateFreePort(appId, preferredPort),
+              new Promise((r) => setTimeout(r, 60)),
+            ]);
+
+            // Set port in process environment
+            process.env.PORT = String(port);
+
+            // Detect runtime and entry points from cloned files
+            sendEvent('stage', { stage: 'detecting', message: 'Detecting framework & entry points...' });
+            const detection = detectFramework(repoDir);
+
+            // If repository has no web entry point (e.g. Cubes2 native C desktop app), reject launch immediately!
+            if (detection.noWebEntry) {
+              throw new Error(
+                `No web entry point found (index.html missing in root, dist, build, public, docs). ${detection.details}. Served directory: ${repoDir}`
+              );
+            }
+
+            sendEvent('stage', {
+              stage: 'resolving_runtime',
+              runtimeType: detection.runtimeType,
+              message: `Resolved runtime: ${detection.runtimeType} (${detection.details})`,
+            });
+
+            // Dependency installation check with lockfile hash cache
+            sendEvent('stage', { stage: 'installing_deps', message: 'Checking dependency cache...' });
+            let skippedDeps = false;
+            if (detection.runtimeType === 'static') {
+              skippedDeps = true; // Static sites have 0 dependencies
+            } else {
+              const currentHash = computeLockfileHash(repoDir);
+              const hashFile = path.join(cacheDir, `${appId}.hash`);
+              const cachedHash = fs.existsSync(hashFile) ? fs.readFileSync(hashFile, 'utf8') : null;
+
+              if (currentHash && currentHash === cachedHash) {
+                skippedDeps = true; // Cache hit: lockfile unchanged!
+              } else if (currentHash) {
+                fs.writeFileSync(hashFile, currentHash, 'utf8');
+              }
+            }
+
+            currentServeDir = detection.serveDir || repoDir;
+            currentCommand = detection.startCommand || 'Built-in Static Server';
+
+            // Building stage: if project needs a build before serving
+            if (detection.needsBuild && detection.hasBuildScript) {
+              sendEvent('stage', { stage: 'building', message: 'Building application (npm run build)...' });
+              try {
+                await execAsync('npm run build', { cwd: repoDir, timeout: 60000 });
+                // Re-check for output entry file after build
+                const recheckEntry = findEntryPoint(repoDir);
+                if (recheckEntry) {
+                  currentServeDir = recheckEntry.serveDir;
+                }
+              } catch (buildErr: unknown) {
+                const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
+                throw new Error(`Build failed during preparation: ${msg}. Served directory: ${currentServeDir}`);
+              }
+            } else {
+              sendEvent('stage', { stage: 'building', skipped: detection.runtimeType === 'static' });
+            }
+
+            // Verify entry point exists in served directory before booting server
+            const entryCheck = findEntryPoint(currentServeDir) || findEntryPoint(repoDir);
+            if (!entryCheck) {
+              throw new Error(
+                `No entry file found: index.html was not found in served directory "${currentServeDir}". ${detection.details}`
+              );
+            }
+            currentServeDir = entryCheck.serveDir;
+
+            // Starting server stage
+            sendEvent('stage', {
+              stage: 'starting',
+              port,
+              message: `Starting server on port ${port} (serving ${path.relative(repoDir, currentServeDir) || '.'})...`,
+            });
+
+            // Ensure any old instance on this appId is stopped
+            stopAppInstance(appId);
+
+            // Start static server on the uniquely allocated port
+            const server = await startStaticServer(currentServeDir, port);
+
+            runningInstances.set(appId, {
+              appId,
+              port,
+              server,
+              runtimeType: detection.runtimeType,
+              servedDir: currentServeDir,
+              startedAt: new Date().toISOString(),
+            });
+
+            // Real HTTP Health Check on the allocated port: MUST return 200 with HTML!
+            sendEvent('stage', { stage: 'health_check', message: `Verifying HTTP health at http://127.0.0.1:${port}...` });
+            const previewUrl = `http://127.0.0.1:${port}/`;
+            const healthCheck = await performHttpHealthCheck(previewUrl);
+
+            if (!healthCheck.healthy) {
+              stopAppInstance(appId);
+              throw new Error(
+                `Launch health check failed: ${healthCheck.reason || 'Server did not return HTML 200'}. Status: ${healthCheck.status || 'unknown'}. Served directory: "${currentServeDir}". Command: "${currentCommand}"`
+              );
+            }
+
+            // Send ready state only after HTTP 200 with HTML succeeds!
+            sendEvent('ready', {
+              stage: 'ready',
+              status: 'running' as AppStatus,
+              port,
+              previewUrl,
+              runtimeType: detection.runtimeType,
+              startCommand: detection.startCommand,
+              buildCommand: detection.buildCommand,
+              commandSources: detection.commandSources,
+              detectedEnvVars: detection.detectedEnvVars,
+              servedDir: currentServeDir,
+              skippedDeps,
+            });
+
+            res.end();
+          } catch (err: unknown) {
+            stopAppInstance(appId);
+            const msg = err instanceof Error ? err.message : String(err);
+            sendEvent('launch_error', {
+              message: msg,
+              servedDir: currentServeDir,
+              command: currentCommand,
+            });
+            sendEvent('error', {
+              message: msg,
+              servedDir: currentServeDir,
+              command: currentCommand,
+            });
+            res.end();
+          }
+          return;
+        }
+
+        // Stop application endpoint
+        if (url.startsWith('/api/apps/stop') && req.method === 'POST') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk; });
+          req.on('end', () => {
+            try {
+              const { appId } = JSON.parse(body || '{}');
+              const stopped = stopAppInstance(appId);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ appId, stopped }));
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: msg }));
+            }
+          });
+          return;
+        }
+
+        next();
+      });
+    },
+  };
+}
