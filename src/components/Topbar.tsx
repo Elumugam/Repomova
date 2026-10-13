@@ -31,6 +31,8 @@ export function Topbar() {
     setActiveView,
     isBookmarked,
     toggleBookmark,
+    setSettingsTab,
+    setAuthMode,
   } = useWorkspaceStore();
 
   const [windowMenuOpen, setWindowMenuOpen] = useState(false);
@@ -295,7 +297,11 @@ export function Topbar() {
         {!isAuthenticated && (
           <button
             className="btn btn-primary btn-sm"
-            onClick={() => setActiveView('settings')}
+            onClick={() => {
+              setSettingsTab('account');
+              setAuthMode('login');
+              setActiveView('settings');
+            }}
             style={{ gap: 'var(--space-1)' }}
           >
             <LogIn size={14} />

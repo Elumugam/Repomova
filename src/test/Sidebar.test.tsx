@@ -69,13 +69,17 @@ describe('Sidebar Component', () => {
     expect(appsBtn).toBeInTheDocument();
     expect(appsBtn).toHaveAttribute('title', 'Connected Apps');
 
-    const settingsBtn = screen.getByRole('button', { name: /^Settings/i });
-    expect(settingsBtn).toBeInTheDocument();
-    expect(settingsBtn).toHaveAttribute('title', 'Settings');
+    // Standalone Settings is removed from sidebar nav items
+    expect(screen.queryByRole('button', { name: /^Settings$/i })).not.toBeInTheDocument();
 
     const connectBtn = screen.getByRole('button', { name: /^Connect Repository/i });
     expect(connectBtn).toBeInTheDocument();
     expect(connectBtn).toHaveAttribute('title', 'Connect Repository');
+
+    // Profile button exists at bottom near theme toggle
+    const profileBtn = screen.getByRole('button', { name: /^Profile/i });
+    expect(profileBtn).toBeInTheDocument();
+    expect(profileBtn).toHaveAttribute('title', 'Profile');
   });
 
   it('navigation works correctly in collapsed state', () => {
@@ -86,10 +90,15 @@ describe('Sidebar Component', () => {
     fireEvent.click(appsBtn);
     expect(useWorkspaceStore.getState().activeView).toBe('apps');
 
-    // Click Settings
-    const settingsBtn = screen.getByRole('button', { name: /^Settings/i });
-    fireEvent.click(settingsBtn);
+    // Profile menu opens and provides Sign In / Sign Up when signed out
+    const profileBtn = screen.getByRole('button', { name: /^Profile/i });
+    fireEvent.click(profileBtn);
+
+    const signInMenuItem = screen.getByRole('menuitem', { name: /^Sign In/i });
+    expect(signInMenuItem).toBeInTheDocument();
+    fireEvent.click(signInMenuItem);
     expect(useWorkspaceStore.getState().activeView).toBe('settings');
+    expect(useWorkspaceStore.getState().authMode).toBe('login');
 
     // Click Home
     const homeBtn = screen.getByRole('button', { name: /^Home/i });

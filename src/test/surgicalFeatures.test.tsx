@@ -142,10 +142,11 @@ describe('Surgical Features & Fixes', () => {
       expect(screen.queryByText(/Running/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/Open Tabs/i)).not.toBeInTheDocument();
 
-      // Only primary nav items should be present
+      // Only primary nav items should be present, standalone Settings is moved into Profile menu
       expect(screen.getByRole('button', { name: /^Home/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /^Connected Apps/i })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /^Settings/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Settings$/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Profile/i })).toBeInTheDocument();
     });
 
     it('bookmarked applications appear in the dedicated sidebar section', () => {
@@ -239,9 +240,11 @@ describe('Surgical Features & Fixes', () => {
       expect(useWorkspaceStore.getState().openTabs.length).toBe(1);
       expect(useWorkspaceStore.getState().openTabs[0].id).toBe('tab-alpha');
 
-      // Navigate to Settings via Sidebar
-      const settingsBtn = within(sidebar).getByRole('button', { name: /^Settings/i });
-      fireEvent.click(settingsBtn);
+      // Navigate to Settings via Profile Menu in Sidebar
+      const profileBtn = within(sidebar).getByRole('button', { name: /^Profile/i });
+      fireEvent.click(profileBtn);
+      const settingsMenuItem = screen.getByRole('menuitem', { name: /^Sign In|^Settings/i });
+      fireEvent.click(settingsMenuItem);
 
       expect(useWorkspaceStore.getState().activeView).toBe('settings');
       expect(screen.getByRole('heading', { name: /^Settings/i })).toBeInTheDocument();

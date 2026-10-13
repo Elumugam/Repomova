@@ -20,7 +20,6 @@ export default function App() {
     openTabs,
     activeTabId,
     connectedApps,
-    user,
     setUser,
     setBookmarkedAppIds,
   } = useWorkspaceStore();
@@ -30,18 +29,20 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Sync Supabase authentication session on mount
+  // Sync Supabase authentication session on mount and restore persisted session
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
     let isMounted = true;
+
+    // Check existing active session on mount
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (!isMounted) return;
       if (error) {
         console.warn('[Repomova] Error retrieving session:', error.message);
         return;
       }
-      if (session?.user && !user) {
+      if (session?.user) {
         setUser({
           id: session.user.id,
           email: session.user.email || '',
@@ -50,6 +51,7 @@ export default function App() {
             session.user.user_metadata?.full_name ||
             session.user.email?.split('@')[0] ||
             'User',
+          avatarUrl: session.user.user_metadata?.avatar_url,
           createdAt: session.user.created_at,
         });
 
@@ -63,10 +65,12 @@ export default function App() {
       }
     });
 
+    // Listen for auth state changes (sign-in, sign-out, token refresh, email confirmation)
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isMounted) return;
+
       if (session?.user) {
         setUser({
           id: session.user.id,
@@ -76,8 +80,18 @@ export default function App() {
             session.user.user_metadata?.full_name ||
             session.user.email?.split('@')[0] ||
             'User',
+          avatarUrl: session.user.user_metadata?.avatar_url,
           createdAt: session.user.created_at,
         });
+
+        // Clean up any email verification token hash from the URL bar
+        if (
+          typeof window !== 'undefined' &&
+          window.location.hash &&
+          (window.location.hash.includes('access_token=') || window.location.hash.includes('type=signup'))
+        ) {
+          window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        }
 
         loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
           if (!isMounted || serverBookmarks.length === 0) return;
@@ -85,7 +99,7 @@ export default function App() {
           const merged = Array.from(new Set([...current, ...serverBookmarks]));
           setBookmarkedAppIds(merged);
         });
-      } else {
+      } else if (event === 'SIGNED_OUT') {
         setUser(null);
       }
     });
@@ -94,7 +108,7 @@ export default function App() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [user, setUser, setBookmarkedAppIds]);
+  }, [setUser, setBookmarkedAppIds]);
 
   return (
     <div className="app-layout">

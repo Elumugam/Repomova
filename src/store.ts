@@ -123,6 +123,12 @@ interface WorkspaceState {
   // ---- Active View ----
   activeView: 'home' | 'apps' | 'settings' | 'app-detail';
   setActiveView: (view: 'home' | 'apps' | 'settings' | 'app-detail') => void;
+
+  // ---- Settings & Auth Mode ----
+  settingsTab: 'account' | 'github' | 'appearance' | 'security';
+  setSettingsTab: (tab: 'account' | 'github' | 'appearance' | 'security') => void;
+  authMode: 'login' | 'signup';
+  setAuthMode: (mode: 'login' | 'signup') => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -380,4 +386,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Active View
   activeView: 'home',
   setActiveView: (view) => set({ activeView: view }),
+
+  // Settings & Auth Mode
+  settingsTab: 'account',
+  setSettingsTab: (tab) => set({ settingsTab: tab }),
+  authMode: 'login',
+  setAuthMode: (mode) => set({ authMode: mode }),
 }));

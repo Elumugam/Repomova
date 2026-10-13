@@ -19,13 +19,16 @@ function sanitizeEnvValue(val: unknown): string {
   return trimmed;
 }
 
-// In Vite, client-side environment variables must be prefixed with VITE_ to be exposed to import.meta.env
-const rawUrl = sanitizeEnvValue(import.meta.env.VITE_SUPABASE_URL);
+// Support both Vite client-side (import.meta.env) and Node/testing (process.env)
+const rawUrl = sanitizeEnvValue(
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL))
+);
 
 // Support both standard VITE_SUPABASE_ANON_KEY and VITE_SUPABASE_PUBLISHABLE_KEY without duplicate config
 const rawKey = sanitizeEnvValue(
-  import.meta.env.VITE_SUPABASE_ANON_KEY ||
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+  (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)) ||
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY))
 );
 
 export function isValidSupabaseUrl(url: string): boolean {
