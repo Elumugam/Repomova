@@ -1,4 +1,5 @@
 import type { ConnectedApp, LaunchStage, RuntimeType, DetectedEnvVar } from '../types';
+import { fetchRepositoryHtml } from './staticPreview';
 
 export interface LaunchResult {
   previewUrl: string;
@@ -326,17 +327,76 @@ export function launchAppWithEvents(
         }
 
         const port = app.port || 3000;
-        const previewHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${app.repoName}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;padding:2.5rem;background:#0d1117;color:#c9d1d9;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:85vh;text-align:center}h1{color:#58a6ff;margin-bottom:0.25rem}.badge{background:#238636;color:#fff;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:600}.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1.5rem;max-width:540px;margin-top:1.5rem;text-align:left}.meta{color:#8b949e;font-size:13px;margin:6px 0}a{color:#58a6ff;text-decoration:none}.status-dot{width:8px;height:8px;background:#238636;border-radius:50%;display:inline-block;margin-right:6px}</style></head><body><span class="badge"><span class="status-dot"></span>Running in Cloud Preview</span><h1>${app.repoName}</h1><p style="color:#8b949e;margin-top:4px">Connected repository: <a href="${app.repoUrl}" target="_blank" rel="noopener noreferrer">${app.repoOwner}/${app.repoName}</a></p><div class="card"><div class="meta"><strong>Status:</strong> Active (HTTP 200)</div><div class="meta"><strong>Port:</strong> ${port}</div><div class="meta"><strong>Runtime:</strong> ${app.runtimeType}</div><div class="meta" style="margin-top:12px;padding-top:10px;border-top:1px solid #30363d;color:#58a6ff;">Application services initialized and running in Repomova workspace.</div></div></body></html>`;
 
-        resolve({
-          previewUrl: app.previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewHtml)}`,
-          port,
-          runtimeType: app.runtimeType || 'python',
-          startCommand: app.startCommand || 'python app.py',
-          buildCommand: app.buildCommand || 'pip install -r requirements.txt',
-          commandSources: app.commandSources,
-          detectedEnvVars: app.detectedEnvVars,
-        });
+        // Non-web projects (CLI, backend, library) have no web interface
+        if (app.hasWebInterface === false && app.runtimeType !== 'backend') {
+          resolve({
+            previewUrl: '',
+            port: 0,
+            runtimeType: app.runtimeType || 'unknown',
+            hasWebInterface: false,
+            projectTypeCategory: app.projectTypeCategory || 'unknown',
+            startCommand: app.startCommand,
+            buildCommand: app.buildCommand,
+            commandSources: app.commandSources,
+            detectedEnvVars: app.detectedEnvVars,
+          });
+          return;
+        }
+
+        // Check if missing required environment variables
+        const missingEnv = (app.detectedEnvVars || []).filter(
+          (v) => v.required && (!app.envVars || !app.envVars[v.key])
+        );
+        if (missingEnv.length > 0) {
+          throw new Error(
+            `Missing required environment variable(s): ${missingEnv.map((v) => v.key).join(', ')}. Please configure them in settings before launching.`
+          );
+        }
+
+        // Try resolving genuine static repository files (e.g. 2048)
+        const realPreview = await fetchRepositoryHtml(app.repoUrl, app.repoName);
+
+        if (realPreview) {
+          // Serve through proxy or data URL with CDN base href
+          const proxyPreviewUrl = `/api/apps/preview?appId=${encodeURIComponent(app.id)}&repoUrl=${encodeURIComponent(app.repoUrl)}&repoName=${encodeURIComponent(app.repoName)}`;
+          resolve({
+            previewUrl: realPreview.previewUrl || proxyPreviewUrl,
+            port,
+            runtimeType: 'static',
+            hasWebInterface: true,
+            projectTypeCategory: 'frontend',
+            startCommand: 'Built-in Static Server',
+            buildCommand: 'None (Static files)',
+            commandSources: {
+              startCommand: 'Auto-configured: serving via built-in static server',
+              buildCommand: 'Auto-configured: plain HTML site requires no build step',
+            },
+            detectedEnvVars: app.detectedEnvVars,
+          });
+          return;
+        }
+
+        // If existing previewUrl was explicitly provided
+        if (app.previewUrl) {
+          resolve({
+            previewUrl: app.previewUrl,
+            port,
+            runtimeType: app.runtimeType || 'static',
+            hasWebInterface: true,
+            projectTypeCategory: app.projectTypeCategory || 'frontend',
+            startCommand: app.startCommand,
+            buildCommand: app.buildCommand,
+            commandSources: app.commandSources,
+            detectedEnvVars: app.detectedEnvVars,
+          });
+          return;
+        }
+
+        // For frameworks requiring local execution runner
+        throw new Error(
+          `No runnable web entry point (index.html) found in repository "${app.repoName}". If this is a framework application, please ensure local dev runner or static build output is available.`
+        );
       } catch (err) {
         reject(err);
       }

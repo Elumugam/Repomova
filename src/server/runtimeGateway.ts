@@ -3,10 +3,11 @@ import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
 import crypto from 'node:crypto';
-import { exec } from 'node:child_process';
+import { exec, spawn, ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Plugin, ViteDevServer } from 'vite';
 import type { RuntimeType, AppStatus, DetectedEnvVar } from '../types.ts';
+import { fetchRepositoryHtml } from '../lib/staticPreview.ts';
 
 const execAsync = promisify(exec);
 
@@ -15,6 +16,7 @@ export interface RunningAppInstance {
   appId: string;
   port: number;
   server?: http.Server;
+  process?: ChildProcess;
   runtimeType: RuntimeType;
   startedAt: string;
   servedDir?: string;
@@ -671,6 +673,19 @@ export function stopAppInstance(appId: string): boolean {
     return false;
   }
 
+  // Terminate running child process if exists
+  if (instance.process && instance.process.pid) {
+    try {
+      if (process.platform === 'win32') {
+        exec(`taskkill /pid ${instance.process.pid} /T /F`, () => {});
+      } else {
+        instance.process.kill('SIGTERM');
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   if (instance.server) {
     try {
       if (typeof (instance.server as unknown as { closeAllConnections?: () => void }).closeAllConnections === 'function') {
@@ -713,7 +728,15 @@ export function runtimeGatewayPlugin(): Plugin {
           const match = url.match(/^\/preview\/([^/?]+)(.*)/);
           if (match) {
             const targetAppId = match[1];
-            const subPath = match[2] || '/';
+            const subPath = match[2] || '';
+
+            // Redirect /preview/:appId to /preview/:appId/ so relative asset paths inside index.html resolve correctly
+            if (!subPath || subPath === '') {
+              res.writeHead(302, { Location: `/preview/${targetAppId}/` });
+              res.end();
+              return;
+            }
+
             const instance = runningInstances.get(targetAppId);
             if (instance) {
               const proxyReq = http.request({
@@ -745,6 +768,56 @@ export function runtimeGatewayPlugin(): Plugin {
               return;
             }
           }
+        }
+
+        // Preview API endpoint: /api/apps/preview?repoUrl=...&appId=...
+        if (url.startsWith('/api/apps/preview')) {
+          const parsedUrl = new URL(url, 'http://127.0.0.1:5173');
+          const previewAppId = parsedUrl.searchParams.get('appId') || '';
+          const previewRepoUrl = parsedUrl.searchParams.get('repoUrl') || '';
+          const previewRepoName = parsedUrl.searchParams.get('repoName') || '';
+
+          // If app is currently running in local gateway, redirect to local preview proxy
+          const inst = runningInstances.get(previewAppId);
+          if (inst && inst.port) {
+            res.writeHead(302, { Location: `/preview/${previewAppId}/` });
+            res.end();
+            return;
+          }
+
+          // Check if local clone exists
+          const repoDir = path.resolve(process.cwd(), '.repomova', 'repos', previewAppId || previewRepoName);
+          const localEntry = findEntryPoint(repoDir);
+          if (localEntry) {
+            const content = fs.readFileSync(path.join(localEntry.serveDir, localEntry.entryFile), 'utf8');
+            res.writeHead(200, {
+              'Content-Type': 'text/html; charset=utf-8',
+              'X-Frame-Options': 'ALLOWALL',
+              'Content-Security-Policy': "frame-ancestors 'self' *",
+            });
+            res.end(content);
+            return;
+          }
+
+          // Remote static preview with CDN base href
+          try {
+            const remote = await fetchRepositoryHtml(previewRepoUrl, previewRepoName);
+            if (remote) {
+              res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'X-Frame-Options': 'ALLOWALL',
+                'Content-Security-Policy': "frame-ancestors 'self' *",
+              });
+              res.end(remote.html);
+              return;
+            }
+          } catch {
+            // ignore
+          }
+
+          res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Entry file not found');
+          return;
         }
 
         // Port availability check endpoint: /api/ports/check?port=...&appId=...
@@ -856,14 +929,14 @@ export function runtimeGatewayPlugin(): Plugin {
           try {
             // IDEMPOTENCY CHECK: If this app is already running and healthy, reuse it!
             const existing = runningInstances.get(appId);
-            if (existing && existing.server) {
+            if (existing && (existing.server || existing.process)) {
               const healthCheck = await performHttpHealthCheck(`http://127.0.0.1:${existing.port}`, 2, 100);
               if (healthCheck.healthy) {
                 sendEvent('ready', {
                   stage: 'ready',
                   status: 'running' as AppStatus,
                   port: existing.port,
-                  previewUrl: `http://127.0.0.1:${existing.port}`,
+                  previewUrl: `/preview/${appId}/`,
                   runtimeType: existing.runtimeType,
                   servedDir: existing.servedDir || repoDir,
                   reused: true,
@@ -984,59 +1057,123 @@ export function runtimeGatewayPlugin(): Plugin {
             currentServeDir = detection.serveDir || repoDir;
             currentCommand = detection.startCommand || 'Built-in Static Server';
 
-            // Building stage: if project needs a build before serving
-            if (detection.needsBuild && detection.hasBuildScript) {
-              sendEvent('stage', { stage: 'building', message: 'Building application (npm run build)...' });
-              try {
-                await execAsync('npm run build', { cwd: repoDir, timeout: 60000 });
-                // Re-check for output entry file after build
-                const recheckEntry = findEntryPoint(repoDir);
-                if (recheckEntry) {
-                  currentServeDir = recheckEntry.serveDir;
-                }
-              } catch (buildErr: unknown) {
-                const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
-                throw new Error(`Build failed during preparation: ${msg}. Served directory: ${currentServeDir}`);
+            let server: http.Server | undefined;
+            let childProcess: ChildProcess | undefined;
+
+            if (detection.runtimeType === 'static') {
+              // Static HTML5 website
+              sendEvent('stage', { stage: 'building', skipped: true });
+
+              const entryCheck = findEntryPoint(currentServeDir) || findEntryPoint(repoDir);
+              if (!entryCheck) {
+                throw new Error(
+                  `No entry file found: index.html was not found in served directory "${currentServeDir}". ${detection.details}`
+                );
               }
+              currentServeDir = entryCheck.serveDir;
+
+              sendEvent('stage', {
+                stage: 'starting',
+                port,
+                message: `Starting server on port ${port} (serving ${path.relative(repoDir, currentServeDir) || '.'})...`,
+              });
+
+              stopAppInstance(appId);
+              server = await startStaticServer(currentServeDir, port);
+
+              runningInstances.set(appId, {
+                appId,
+                port,
+                server,
+                runtimeType: detection.runtimeType,
+                servedDir: currentServeDir,
+                startedAt: new Date().toISOString(),
+              });
             } else {
-              sendEvent('stage', { stage: 'building', skipped: detection.runtimeType === 'static' });
+              // Framework applications (Vite, React, Vue, Next.js, etc.)
+              const pkgJsonPath = path.join(repoDir, 'package.json');
+              const nodeModulesPath = path.join(repoDir, 'node_modules');
+
+              if (fs.existsSync(pkgJsonPath) && !fs.existsSync(nodeModulesPath)) {
+                sendEvent('stage', { stage: 'installing_deps', message: 'Installing dependencies (npm install)...' });
+                try {
+                  await execAsync('npm install --no-audit --no-fund', { cwd: repoDir, timeout: 90000 });
+                } catch (installErr: unknown) {
+                  const msg = installErr instanceof Error ? installErr.message : String(installErr);
+                  throw new Error(`Dependency installation failed: ${msg}`);
+                }
+              }
+
+              if (detection.needsBuild && detection.hasBuildScript) {
+                sendEvent('stage', { stage: 'building', message: 'Building application (npm run build)...' });
+                try {
+                  await execAsync('npm run build', { cwd: repoDir, timeout: 60000 });
+                  const recheckEntry = findEntryPoint(repoDir);
+                  if (recheckEntry) {
+                    currentServeDir = recheckEntry.serveDir;
+                  }
+                } catch (buildErr: unknown) {
+                  const msg = buildErr instanceof Error ? buildErr.message : String(buildErr);
+                  throw new Error(`Build failed during preparation: ${msg}. Served directory: ${currentServeDir}`);
+                }
+              }
+
+              const entryCheck = findEntryPoint(currentServeDir) || findEntryPoint(repoDir);
+              if (entryCheck) {
+                currentServeDir = entryCheck.serveDir;
+                sendEvent('stage', {
+                  stage: 'starting',
+                  port,
+                  message: `Starting server on port ${port}...`,
+                });
+                stopAppInstance(appId);
+                server = await startStaticServer(currentServeDir, port);
+                runningInstances.set(appId, {
+                  appId,
+                  port,
+                  server,
+                  runtimeType: detection.runtimeType,
+                  servedDir: currentServeDir,
+                  startedAt: new Date().toISOString(),
+                });
+              } else if (detection.startCommand) {
+                sendEvent('stage', {
+                  stage: 'starting',
+                  port,
+                  message: `Starting dev server: ${detection.startCommand} on port ${port}...`,
+                });
+                stopAppInstance(appId);
+
+                const cmdParts = detection.startCommand.split(' ');
+                childProcess = spawn(cmdParts[0], cmdParts.slice(1), {
+                  cwd: repoDir,
+                  shell: true,
+                  env: {
+                    ...process.env,
+                    PORT: String(port),
+                    HOST: '127.0.0.1',
+                  },
+                });
+
+                runningInstances.set(appId, {
+                  appId,
+                  port,
+                  process: childProcess,
+                  runtimeType: detection.runtimeType,
+                  servedDir: currentServeDir,
+                  startedAt: new Date().toISOString(),
+                });
+              } else {
+                throw new Error(
+                  `No runnable web entry point found in "${currentServeDir}".`
+                );
+              }
             }
-
-            // Verify entry point exists in served directory before booting server
-            const entryCheck = findEntryPoint(currentServeDir) || findEntryPoint(repoDir);
-            if (!entryCheck) {
-              throw new Error(
-                `No entry file found: index.html was not found in served directory "${currentServeDir}". ${detection.details}`
-              );
-            }
-            currentServeDir = entryCheck.serveDir;
-
-            // Starting server stage
-            sendEvent('stage', {
-              stage: 'starting',
-              port,
-              message: `Starting server on port ${port} (serving ${path.relative(repoDir, currentServeDir) || '.'})...`,
-            });
-
-            // Ensure any old instance on this appId is stopped
-            stopAppInstance(appId);
-
-            // Start static server on the uniquely allocated port
-            const server = await startStaticServer(currentServeDir, port);
-
-            runningInstances.set(appId, {
-              appId,
-              port,
-              server,
-              runtimeType: detection.runtimeType,
-              servedDir: currentServeDir,
-              startedAt: new Date().toISOString(),
-            });
 
             // Real HTTP Health Check on the allocated port: MUST return 200 with HTML!
             sendEvent('stage', { stage: 'health_check', message: `Verifying HTTP health at http://127.0.0.1:${port}...` });
-            const previewUrl = `http://127.0.0.1:${port}/`;
-            const healthCheck = await performHttpHealthCheck(previewUrl);
+            const directPortUrl = `http://127.0.0.1:${port}/`;
+            const healthCheck = await performHttpHealthCheck(directPortUrl, 25, 300);
 
             if (!healthCheck.healthy) {
               stopAppInstance(appId);
@@ -1044,6 +1181,8 @@ export function runtimeGatewayPlugin(): Plugin {
                 `Launch health check failed: ${healthCheck.reason || 'Server did not return HTML 200'}. Status: ${healthCheck.status || 'unknown'}. Served directory: "${currentServeDir}". Command: "${currentCommand}"`
               );
             }
+
+            const previewUrl = `/preview/${appId}/`;
 
             // Send ready state only after HTTP 200 with HTML succeeds!
             sendEvent('ready', {

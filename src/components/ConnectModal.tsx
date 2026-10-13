@@ -85,6 +85,20 @@ export function ConnectModal() {
     };
 
     addConnectedApp(newApp);
+
+    // If current active tab is an empty workspace tab, assign this newly connected app to it. Otherwise open a new tab.
+    const currentTab = useWorkspaceStore.getState().openTabs.find((t) => t.id === useWorkspaceStore.getState().activeTabId);
+    if (currentTab && !currentTab.appId) {
+      useWorkspaceStore.getState().assignAppToTab(currentTab.id, newApp.id);
+    } else {
+      useWorkspaceStore.getState().openTab({
+        id: `tab-${newApp.id}`,
+        appId: newApp.id,
+        title: newApp.repoName,
+        status: newApp.status,
+      });
+    }
+
     setImporting(false);
     setImportSuccess(true);
 

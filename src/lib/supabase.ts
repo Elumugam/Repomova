@@ -71,3 +71,44 @@ export const supabase = createClient(
     },
   }
 );
+
+/**
+ * Persists bookmark state to Supabase connected_apps table for authenticated users.
+ */
+export async function syncBookmarkToSupabase(
+  userId: string,
+  appId: string,
+  isBookmarked: boolean
+): Promise<void> {
+  if (!isSupabaseConfigured || !userId) return;
+  try {
+    const { error } = await supabase
+      .from('connected_apps')
+      .update({ is_starred: isBookmarked })
+      .eq('id', appId)
+      .eq('user_id', userId);
+    if (error) {
+      console.warn('[Repomova] Error syncing bookmark to Supabase:', error.message);
+    }
+  } catch (err) {
+    console.warn('[Repomova] Exception syncing bookmark to Supabase:', err);
+  }
+}
+
+/**
+ * Loads bookmarked application IDs from Supabase for authenticated users.
+ */
+export async function loadBookmarksFromSupabase(userId: string): Promise<string[]> {
+  if (!isSupabaseConfigured || !userId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('connected_apps')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('is_starred', true);
+    if (error || !data) return [];
+    return data.map((row: { id: string }) => row.id);
+  } catch {
+    return [];
+  }
+}

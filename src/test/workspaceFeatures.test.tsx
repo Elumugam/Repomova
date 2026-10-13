@@ -46,7 +46,7 @@ describe('Workspace Surgical Features & Improvements', () => {
       expect(plusBtn).toBeInTheDocument();
     });
 
-    it('clicking "+" button opens an additional window view for the active application', () => {
+    it('clicking "+" button opens a new empty workspace without duplicating the active application', () => {
       useWorkspaceStore.setState({
         connectedApps: [testApp],
         openTabs: [{ id: 'tab-1', appId: testApp.id, title: 'react-dashboard', status: 'running' }],
@@ -59,9 +59,12 @@ describe('Workspace Surgical Features & Improvements', () => {
 
       const tabs = useWorkspaceStore.getState().openTabs;
       expect(tabs.length).toBe(2);
-      expect(tabs[1].title).toBe('react-dashboard (2)');
-      expect(tabs[1].appId).toBe(testApp.id);
+      expect(tabs[1].title).toBe('New Workspace');
+      expect(tabs[1].appId).toBe('');
+      expect(tabs[1].appId).not.toBe(testApp.id);
       expect(useWorkspaceStore.getState().activeTabId).toBe(tabs[1].id);
+      expect(tabs[0].appId).toBe(testApp.id);
+      expect(tabs[0].status).toBe('running');
     });
 
     it('closing an individual window view preserves the connected repository and running status', () => {

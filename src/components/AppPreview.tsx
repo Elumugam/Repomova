@@ -22,6 +22,7 @@ import {
   Info,
   Wrench,
   FileCode,
+  Bookmark,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
 import {
@@ -73,6 +74,17 @@ export function AppPreview({ app }: AppPreviewProps) {
   }, [app.id, app.repoUrl, app.repoName, app.runtimeType, updateApp]);
 
   const handleLaunch = useCallback(async () => {
+    // Validate missing required environment variables
+    const missingRequired = (app.detectedEnvVars || []).filter(
+      (v) => v.required && (!app.envVars || !app.envVars[v.key])
+    );
+    if (missingRequired.length > 0) {
+      updateAppStatus(app.id, 'requires_configuration');
+      setIsLaunching(false);
+      setIsConfigOpen(true);
+      return;
+    }
+
     setIsLaunching(true);
     setErrorMessage(null);
     updateAppStatus(app.id, 'preparing');
@@ -1064,10 +1076,24 @@ function RunningAppView({
   app: ConnectedApp;
   onOpenConfig: () => void;
 }) {
-  const { updateAppStatus } = useWorkspaceStore();
+  const { updateAppStatus, isBookmarked, toggleBookmark } = useWorkspaceStore();
   const [iframeKey, setIframeKey] = useState(0);
   const [frameBlocked, setFrameBlocked] = useState(false);
   const previewUrl = app.previewUrl || (app.port ? `http://127.0.0.1:${app.port}` : '');
+  const bookmarked = isBookmarked(app.id);
+
+  // Listen to Topbar / external reload events targeted at this application
+  useEffect(() => {
+    const handleReload = (e: Event) => {
+      const customEvent = e as CustomEvent<{ appId?: string }>;
+      if (!customEvent.detail || !customEvent.detail.appId || customEvent.detail.appId === app.id) {
+        setFrameBlocked(false);
+        setIframeKey((k) => k + 1);
+      }
+    };
+    window.addEventListener('repomova-reload-preview', handleReload);
+    return () => window.removeEventListener('repomova-reload-preview', handleReload);
+  }, [app.id]);
 
   return (
     <div className="preview-container">
@@ -1097,6 +1123,18 @@ function RunningAppView({
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+          <button
+            className="btn btn-icon btn-ghost btn-sm"
+            title={bookmarked ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
+            aria-label={bookmarked ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
+            onClick={() => toggleBookmark(app.id)}
+          >
+            <Bookmark
+              size={13}
+              fill={bookmarked ? 'currentColor' : 'none'}
+              style={{ color: bookmarked ? 'var(--color-warning)' : undefined }}
+            />
+          </button>
           <button
             className="btn btn-icon btn-ghost btn-sm"
             title="Configure application"

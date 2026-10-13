@@ -3,6 +3,7 @@
    ============================================ */
 import { create } from 'zustand';
 import type { ConnectedApp, OpenTab, UserProfile, Theme, AppStatus } from './types';
+import { isSupabaseConfigured, syncBookmarkToSupabase } from './lib/supabase';
 
 function getInitialSidebarCollapsed(): boolean {
   try {
@@ -14,6 +15,19 @@ function getInitialSidebarCollapsed(): boolean {
     // Ignore localStorage errors
   }
   return true; // Collapsed by default in a fresh session
+}
+
+function getInitialBookmarks(): string[] {
+  try {
+    const saved = localStorage.getItem('repomova-bookmarks');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+  return [];
 }
 
 interface WorkspaceState {
@@ -49,10 +63,18 @@ interface WorkspaceState {
   updateApp: (appId: string, updates: Partial<ConnectedApp>) => void;
   removeConnectedApp: (appId: string) => void;
 
+  // ---- Bookmarks ----
+  bookmarkedAppIds: string[];
+  toggleBookmark: (appId: string) => void;
+  isBookmarked: (appId: string) => boolean;
+  setBookmarkedAppIds: (ids: string[]) => void;
+
   // ---- Open Tabs ----
   openTabs: OpenTab[];
   activeTabId: string | null;
   openTab: (tab: OpenTab) => void;
+  openNewWorkspace: () => string;
+  assignAppToTab: (tabId: string, appId: string) => void;
   openNewWindow: (appId?: string) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
@@ -66,7 +88,7 @@ interface WorkspaceState {
   setActiveView: (view: 'home' | 'apps' | 'settings' | 'app-detail') => void;
 }
 
-export const useWorkspaceStore = create<WorkspaceState>((set) => ({
+export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Theme
   theme: (localStorage.getItem('repomova-theme') as Theme) || 'light',
   setTheme: (t) => {
@@ -137,55 +159,125 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       ),
     })),
   removeConnectedApp: (appId) =>
-    set((s) => ({
-      connectedApps: s.connectedApps.filter((a) => a.id !== appId),
-      openTabs: s.openTabs.filter((t) => t.appId !== appId),
-    })),
+    set((s) => {
+      const nextBookmarks = s.bookmarkedAppIds.filter((id) => id !== appId);
+      try {
+        localStorage.setItem('repomova-bookmarks', JSON.stringify(nextBookmarks));
+      } catch {
+        // Ignore localStorage errors
+      }
+      return {
+        connectedApps: s.connectedApps.filter((a) => a.id !== appId),
+        openTabs: s.openTabs.filter((t) => t.appId !== appId),
+        bookmarkedAppIds: nextBookmarks,
+      };
+    }),
 
-  // Open Tabs
+  // Bookmarks
+  bookmarkedAppIds: getInitialBookmarks(),
+  toggleBookmark: (appId) => {
+    set((s) => {
+      const exists = s.bookmarkedAppIds.includes(appId);
+      const next = exists
+        ? s.bookmarkedAppIds.filter((id) => id !== appId)
+        : [...s.bookmarkedAppIds, appId];
+
+      try {
+        localStorage.setItem('repomova-bookmarks', JSON.stringify(next));
+      } catch {
+        // Ignore localStorage errors
+      }
+
+      if (s.user && isSupabaseConfigured) {
+        syncBookmarkToSupabase(s.user.id, appId, !exists);
+      }
+
+      return { bookmarkedAppIds: next };
+    });
+  },
+  isBookmarked: (appId) => get().bookmarkedAppIds.includes(appId),
+  setBookmarkedAppIds: (ids) => {
+    const unique = Array.from(new Set(ids));
+    try {
+      localStorage.setItem('repomova-bookmarks', JSON.stringify(unique));
+    } catch {
+      // Ignore localStorage errors
+    }
+    set({ bookmarkedAppIds: unique });
+  },
+
+  // Open Tabs & Workspaces
   openTabs: [],
   activeTabId: null,
   openTab: (tab) =>
     set((s) => {
-      const existing = s.openTabs.find((t) => t.id === tab.id);
-      if (existing) return { activeTabId: existing.id };
-      return { openTabs: [...s.openTabs, tab], activeTabId: tab.id };
+      const existing = s.openTabs.find(
+        (t) => t.id === tab.id || (Boolean(tab.appId) && t.appId === tab.appId)
+      );
+      if (existing) return { activeTabId: existing.id, activeView: 'apps' };
+      return { openTabs: [...s.openTabs, tab], activeTabId: tab.id, activeView: 'apps' };
+    }),
+  openNewWorkspace: () => {
+    const newTabId = `workspace-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newTab: OpenTab = {
+      id: newTabId,
+      appId: '',
+      title: 'New Workspace',
+      status: 'connected',
+    };
+    set((s) => ({
+      openTabs: [...s.openTabs, newTab],
+      activeTabId: newTabId,
+      activeView: 'apps',
+    }));
+    return newTabId;
+  },
+  assignAppToTab: (tabId, appId) =>
+    set((s) => {
+      const app = s.connectedApps.find((a) => a.id === appId);
+      if (!app) return s;
+      return {
+        openTabs: s.openTabs.map((t) =>
+          t.id === tabId
+            ? {
+                ...t,
+                appId: app.id,
+                title: app.repoName,
+                status: app.status,
+                previewUrl: app.previewUrl,
+              }
+            : t
+        ),
+        activeTabId: tabId,
+        activeView: 'apps',
+      };
     }),
   openNewWindow: (appId?: string) => {
-    let newTabId = '';
-    set((s) => {
-      let targetAppId = appId;
-      if (!targetAppId) {
-        const activeTab = s.openTabs.find((t) => t.id === s.activeTabId);
-        if (activeTab) {
-          targetAppId = activeTab.appId;
-        } else if (s.connectedApps.length > 0) {
-          targetAppId = s.connectedApps[0].id;
-        }
-      }
-      if (!targetAppId) return s;
+    if (!appId) {
+      return get().openNewWorkspace();
+    }
 
-      const app = s.connectedApps.find((a) => a.id === targetAppId);
-      if (!app) return s;
+    const app = get().connectedApps.find((a) => a.id === appId);
+    if (!app) return '';
 
-      const existingViews = s.openTabs.filter((t) => t.appId === app.id);
-      const viewNumber = existingViews.length + 1;
-      const title = existingViews.length > 0 ? `${app.repoName} (${viewNumber})` : app.repoName;
-      newTabId = `tab-${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const existingViews = get().openTabs.filter((t) => t.appId === app.id);
+    const viewNumber = existingViews.length + 1;
+    const title = existingViews.length > 0 ? `${app.repoName} (${viewNumber})` : app.repoName;
+    const newTabId = `tab-${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-      const newTab: OpenTab = {
-        id: newTabId,
-        appId: app.id,
-        title,
-        status: app.status,
-        previewUrl: app.previewUrl,
-      };
+    const newTab: OpenTab = {
+      id: newTabId,
+      appId: app.id,
+      title,
+      status: app.status,
+      previewUrl: app.previewUrl,
+    };
 
-      return {
-        openTabs: [...s.openTabs, newTab],
-        activeTabId: newTabId,
-      };
-    });
+    set((s) => ({
+      openTabs: [...s.openTabs, newTab],
+      activeTabId: newTabId,
+      activeView: 'apps',
+    }));
     return newTabId;
   },
   closeTab: (tabId) =>
@@ -200,7 +292,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       }
       return { openTabs: remaining, activeTabId: nextActive };
     }),
-  setActiveTab: (tabId) => set({ activeTabId: tabId }),
+  setActiveTab: (tabId) => set({ activeTabId: tabId, activeView: 'apps' }),
 
   // Modals
   connectModalOpen: false,

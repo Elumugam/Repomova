@@ -4,8 +4,7 @@
 import {
   Home,
   LayoutGrid,
-  Play,
-  Clock,
+  Bookmark,
   Plus,
   Settings,
   User,
@@ -26,6 +25,7 @@ export function Sidebar() {
     setActiveView,
     setConnectModalOpen,
     connectedApps,
+    bookmarkedAppIds,
     openTabs,
     openTab,
     setActiveTab,
@@ -34,7 +34,7 @@ export function Sidebar() {
     user,
   } = useWorkspaceStore();
 
-  const runningApps = connectedApps.filter((a) => a.status === 'running');
+  const bookmarkedApps = connectedApps.filter((a) => bookmarkedAppIds.includes(a.id));
 
   const sidebarClass = [
     'app-sidebar',
@@ -130,18 +130,20 @@ export function Sidebar() {
             );
           })}
 
-          {/* Running Apps */}
-          {runningApps.length > 0 && !sidebarCollapsed && (
+          {/* Bookmarked Applications */}
+          {bookmarkedApps.length > 0 && !sidebarCollapsed && (
             <div className="sidebar-section">
               <div className="sidebar-section-label">
                 <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Play size={10} /> Running
+                  <Bookmark size={10} /> Bookmarks
                 </span>
               </div>
-              {runningApps.map((app) => (
+              {bookmarkedApps.map((app) => (
                 <button
                   key={app.id}
                   className="sidebar-item"
+                  title={sidebarCollapsed ? app.repoName : undefined}
+                  aria-label={`Open bookmarked ${app.repoName}`}
                   onClick={() => {
                     const existingTab = openTabs.find((t) => t.appId === app.id);
                     if (existingTab) {
@@ -152,38 +154,28 @@ export function Sidebar() {
                         appId: app.id,
                         title: app.repoName,
                         status: app.status,
+                        previewUrl: app.previewUrl,
                       });
                     }
+                    setActiveView('apps');
+                    setSidebarOpen(false);
                   }}
                 >
-                  <span className="status-dot status-running" />
+                  <span
+                    className="status-dot"
+                    style={{
+                      background:
+                        app.status === 'running'
+                          ? 'var(--color-status-running)'
+                          : app.status === 'failed'
+                          ? 'var(--color-status-error)'
+                          : 'var(--color-status-stopped)',
+                      width: '6px',
+                      height: '6px',
+                    }}
+                  />
                   <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {app.repoName}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Recent Tabs */}
-          {openTabs.length > 0 && !sidebarCollapsed && (
-            <div className="sidebar-section">
-              <div className="sidebar-section-label">
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Clock size={10} /> Open Tabs
-                </span>
-              </div>
-              {openTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  className="sidebar-item"
-                  onClick={() => {
-                    setActiveTab(tab.id);
-                  }}
-                >
-                  <LayoutGrid size={14} className="sidebar-item-icon" />
-                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {tab.title}
                   </span>
                 </button>
               ))}

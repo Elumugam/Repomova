@@ -119,15 +119,16 @@ export interface ConnectedApp {
   entryPoint?: string;
   projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
   lastError?: string;
+  isBookmarked?: boolean;
 }
 
 // ---------- Open Tab ----------
 export interface OpenTab {
   id: string;
-  appId: string;
+  appId?: string;
   title: string;
   previewUrl?: string;
-  status: AppStatus;
+  status?: AppStatus;
 }
 
 // ---------- Auth ----------

@@ -12,6 +12,7 @@ import {
   ArrowRight,
   Plus,
   Filter,
+  Bookmark,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
 import { APP_STATUS_LABELS, APP_STATUS_COLORS, RUNTIME_LABELS } from '../types';
@@ -27,6 +28,8 @@ export function ConnectedAppsView() {
     setActiveTab,
     removeConnectedApp,
     updateAppStatus,
+    isBookmarked,
+    toggleBookmark,
   } = useWorkspaceStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -172,6 +175,18 @@ export function ConnectedAppsView() {
                 </div>
               </div>
               <div className="app-row-actions">
+                <button
+                  className="btn btn-icon btn-ghost btn-sm"
+                  onClick={() => toggleBookmark(app.id)}
+                  title={isBookmarked(app.id) ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
+                  aria-label={isBookmarked(app.id) ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
+                >
+                  <Bookmark
+                    size={14}
+                    fill={isBookmarked(app.id) ? 'currentColor' : 'none'}
+                    style={{ color: isBookmarked(app.id) ? 'var(--color-warning)' : undefined }}
+                  />
+                </button>
                 {app.status === 'running' ? (
                   <button
                     className="btn btn-ghost btn-sm"

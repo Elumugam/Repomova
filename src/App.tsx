@@ -10,7 +10,8 @@ import { ConnectedAppsView } from './components/ConnectedAppsView';
 import { ConnectModal } from './components/ConnectModal';
 import { SettingsView } from './components/SettingsView';
 import { AppPreview } from './components/AppPreview';
-import { supabase, isSupabaseConfigured } from './lib/supabase';
+import { NewWorkspaceView } from './components/NewWorkspaceView';
+import { supabase, isSupabaseConfigured, loadBookmarksFromSupabase } from './lib/supabase';
 
 export default function App() {
   const {
@@ -21,6 +22,7 @@ export default function App() {
     connectedApps,
     user,
     setUser,
+    setBookmarkedAppIds,
   } = useWorkspaceStore();
 
   // Apply theme on mount
@@ -50,6 +52,14 @@ export default function App() {
             'User',
           createdAt: session.user.created_at,
         });
+
+        // Load persisted bookmarks from Supabase
+        loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
+          if (!isMounted || serverBookmarks.length === 0) return;
+          const current = useWorkspaceStore.getState().bookmarkedAppIds;
+          const merged = Array.from(new Set([...current, ...serverBookmarks]));
+          setBookmarkedAppIds(merged);
+        });
       }
     });
 
@@ -68,6 +78,13 @@ export default function App() {
             'User',
           createdAt: session.user.created_at,
         });
+
+        loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
+          if (!isMounted || serverBookmarks.length === 0) return;
+          const current = useWorkspaceStore.getState().bookmarkedAppIds;
+          const merged = Array.from(new Set([...current, ...serverBookmarks]));
+          setBookmarkedAppIds(merged);
+        });
       } else {
         setUser(null);
       }
@@ -77,32 +94,7 @@ export default function App() {
       isMounted = false;
       subscription.unsubscribe();
     };
-  }, [user, setUser]);
-
-  // Find the active tab's associated app
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const activeApp = activeTab
-    ? connectedApps.find((a) => a.id === activeTab.appId)
-    : null;
-
-  // Determine main content
-  function renderContent() {
-    // If there's an active tab, show its preview
-    if (activeTab && activeApp) {
-      return <AppPreview app={activeApp} />;
-    }
-
-    // Otherwise show the view
-    switch (activeView) {
-      case 'apps':
-        return <ConnectedAppsView />;
-      case 'settings':
-        return <SettingsView />;
-      case 'home':
-      default:
-        return <WelcomeScreen />;
-    }
-  }
+  }, [user, setUser, setBookmarkedAppIds]);
 
   return (
     <div className="app-layout">
@@ -111,7 +103,47 @@ export default function App() {
       <div className="app-main">
         <Topbar />
         <div className="app-content">
-          {renderContent()}
+          {activeView === 'home' && <WelcomeScreen />}
+          {activeView === 'settings' && <SettingsView />}
+
+          <div
+            className="workspace-container"
+            style={{
+              display: activeView === 'apps' ? 'flex' : 'none',
+              flexDirection: 'column',
+              height: '100%',
+              width: '100%',
+              flex: 1,
+            }}
+          >
+            {openTabs.length === 0 ? (
+              <ConnectedAppsView />
+            ) : (
+              openTabs.map((tab) => {
+                const isCurrent = tab.id === activeTabId;
+                const app = connectedApps.find((a) => a.id === tab.appId);
+
+                return (
+                  <div
+                    key={tab.id}
+                    style={{
+                      display: isCurrent ? 'flex' : 'none',
+                      flexDirection: 'column',
+                      height: '100%',
+                      width: '100%',
+                      flex: 1,
+                    }}
+                  >
+                    {app ? (
+                      <AppPreview app={app} />
+                    ) : (
+                      <NewWorkspaceView tabId={tab.id} />
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
 

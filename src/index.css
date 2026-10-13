@@ -532,12 +532,44 @@ ul, ol {
   padding: 0 var(--space-4);
   background: var(--color-bg-primary);
   flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 
 .app-content {
   flex: 1;
   overflow-y: auto;
   position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-container {
+  height: 100%;
+  width: 100%;
+  flex: 1;
+}
+
+.tab-bookmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.tab-bookmark:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.tab-bookmark.bookmarked {
+  color: var(--color-warning);
 }
 
 /* ============================================================
