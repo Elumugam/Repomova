@@ -91,6 +91,8 @@ export interface ConnectedApp {
   userId: string;
   repoOwner: string;
   repoName: string;
+  displayName?: string;
+  customThumbnail?: string;
   repoFullName: string;
   repoUrl: string;
   defaultBranch: string;

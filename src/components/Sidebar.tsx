@@ -138,47 +138,50 @@ export function Sidebar() {
                   <Bookmark size={10} /> Bookmarks
                 </span>
               </div>
-              {bookmarkedApps.map((app) => (
-                <button
-                  key={app.id}
-                  className="sidebar-item"
-                  title={sidebarCollapsed ? app.repoName : undefined}
-                  aria-label={`Open bookmarked ${app.repoName}`}
-                  onClick={() => {
-                    const existingTab = openTabs.find((t) => t.appId === app.id);
-                    if (existingTab) {
-                      setActiveTab(existingTab.id);
-                    } else {
-                      openTab({
-                        id: `tab-${app.id}`,
-                        appId: app.id,
-                        title: app.repoName,
-                        status: app.status,
-                        previewUrl: app.previewUrl,
-                      });
-                    }
-                    setActiveView('apps');
-                    setSidebarOpen(false);
-                  }}
-                >
-                  <span
-                    className="status-dot"
-                    style={{
-                      background:
-                        app.status === 'running'
-                          ? 'var(--color-status-running)'
-                          : app.status === 'failed'
-                          ? 'var(--color-status-error)'
-                          : 'var(--color-status-stopped)',
-                      width: '6px',
-                      height: '6px',
+              {bookmarkedApps.map((app) => {
+                const displayName = app.displayName || app.repoName;
+                return (
+                  <button
+                    key={app.id}
+                    className="sidebar-item"
+                    title={sidebarCollapsed ? displayName : undefined}
+                    aria-label={`Open bookmarked ${displayName}`}
+                    onClick={() => {
+                      const existingTab = openTabs.find((t) => t.appId === app.id);
+                      if (existingTab) {
+                        setActiveTab(existingTab.id);
+                      } else {
+                        openTab({
+                          id: `tab-${app.id}`,
+                          appId: app.id,
+                          title: displayName,
+                          status: app.status,
+                          previewUrl: app.previewUrl,
+                        });
+                      }
+                      setActiveView('apps');
+                      setSidebarOpen(false);
                     }}
-                  />
-                  <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {app.repoName}
-                  </span>
-                </button>
-              ))}
+                  >
+                    <span
+                      className="status-dot"
+                      style={{
+                        background:
+                          app.status === 'running'
+                            ? 'var(--color-status-running)'
+                            : app.status === 'failed'
+                            ? 'var(--color-status-error)'
+                            : 'var(--color-status-stopped)',
+                        width: '6px',
+                        height: '6px',
+                      }}
+                    />
+                    <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {displayName}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
 

@@ -1,7 +1,7 @@
 /* ============================================
    App Preview — Embedded application view & Project Overview
    ============================================ */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Loader2,
   AlertTriangle,
@@ -23,6 +23,8 @@ import {
   Wrench,
   FileCode,
   Bookmark,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
 import {
@@ -1079,10 +1081,37 @@ function RunningAppView({
   const { updateAppStatus, isBookmarked, toggleBookmark } = useWorkspaceStore();
   const [iframeKey, setIframeKey] = useState(0);
   const [frameBlocked, setFrameBlocked] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const previewUrl = app.previewUrl || (app.port ? `http://127.0.0.1:${app.port}` : '');
   const bookmarked = isBookmarked(app.id);
+  const appDisplayName = app.displayName || app.repoName;
 
-  // Listen to Topbar / external reload events targeted at this application
+  const handleEnterFullscreen = useCallback(async () => {
+    setIsFullscreen(true);
+    try {
+      if (containerRef.current && typeof containerRef.current.requestFullscreen === 'function') {
+        if (!document.fullscreenElement) {
+          await containerRef.current.requestFullscreen().catch(() => {});
+        }
+      }
+    } catch {
+      // Graceful fallback to Repomova workspace CSS full-screen
+    }
+  }, []);
+
+  const handleExitFullscreen = useCallback(async () => {
+    setIsFullscreen(false);
+    try {
+      if (typeof document.exitFullscreen === 'function' && document.fullscreenElement) {
+        await document.exitFullscreen().catch(() => {});
+      }
+    } catch {
+      // Ignore exit fullscreen error
+    }
+  }, []);
+
+  // Listen to Topbar / external reload and full-screen events targeted at this application
   useEffect(() => {
     const handleReload = (e: Event) => {
       const customEvent = e as CustomEvent<{ appId?: string }>;
@@ -1091,93 +1120,181 @@ function RunningAppView({
         setIframeKey((k) => k + 1);
       }
     };
+    const handleFullscreenTrigger = (e: Event) => {
+      const customEvent = e as CustomEvent<{ appId?: string }>;
+      if (!customEvent.detail || !customEvent.detail.appId || customEvent.detail.appId === app.id) {
+        handleEnterFullscreen();
+      }
+    };
     window.addEventListener('repomova-reload-preview', handleReload);
-    return () => window.removeEventListener('repomova-reload-preview', handleReload);
-  }, [app.id]);
+    window.addEventListener('repomova-enter-fullscreen', handleFullscreenTrigger);
+    return () => {
+      window.removeEventListener('repomova-reload-preview', handleReload);
+      window.removeEventListener('repomova-enter-fullscreen', handleFullscreenTrigger);
+    };
+  }, [app.id, handleEnterFullscreen]);
+
+  // Handle Escape key and browser fullscreenchange events
+  useEffect(() => {
+    if (!isFullscreen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleExitFullscreen();
+      }
+    };
+
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, [isFullscreen, handleExitFullscreen]);
 
   return (
-    <div className="preview-container">
-      {/* Preview toolbar */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: 'var(--space-2) var(--space-4)',
-        borderBottom: '1px solid var(--color-border)',
-        background: 'var(--color-bg-secondary)',
-        height: '36px',
-        flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <span className="status-dot status-running" />
-          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
-            {app.repoName} — Running
+    <div
+      ref={containerRef}
+      className={`preview-container ${isFullscreen ? 'preview-fullscreen' : ''}`}
+      data-testid="running-app-view"
+    >
+      {/* Floating Exit Button in Fullscreen Mode */}
+      {isFullscreen && (
+        <button
+          className="btn btn-secondary btn-sm preview-exit-fullscreen-btn"
+          onClick={handleExitFullscreen}
+          title="Exit full-screen workspace view (Esc)"
+          aria-label="Exit full screen"
+          style={{
+            position: 'fixed',
+            top: '16px',
+            right: '16px',
+            zIndex: 10000,
+            boxShadow: 'var(--shadow-lg)',
+            background: 'var(--color-bg-elevated)',
+            backdropFilter: 'blur(12px)',
+            border: '1px solid var(--color-border-strong)',
+            color: 'var(--color-text-primary)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 14px',
+            borderRadius: 'var(--radius-full)',
+            cursor: 'pointer',
+          }}
+        >
+          <Minimize2 size={14} />
+          <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-medium)' }}>
+            Exit Full Screen (Esc)
           </span>
-          <span className="badge" style={{ background: 'var(--color-bg-tertiary)', fontSize: '10px' }}>
-            {RUNTIME_LABELS[app.runtimeType]}
-          </span>
-          {app.port && (
-            <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>
-              :{app.port}
+        </button>
+      )}
+
+      {/* Preview toolbar (hidden in full-screen workspace mode) */}
+      {!isFullscreen && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: 'var(--space-2) var(--space-4)',
+          borderBottom: '1px solid var(--color-border)',
+          background: 'var(--color-bg-secondary)',
+          height: '36px',
+          flexShrink: 0,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <span className="status-dot status-running" />
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
+              {appDisplayName} — Running
             </span>
-          )}
+            <span className="badge" style={{ background: 'var(--color-bg-tertiary)', fontSize: '10px' }}>
+              {RUNTIME_LABELS[app.runtimeType]}
+            </span>
+            {app.port && (
+              <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>
+                :{app.port}
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title={bookmarked ? `Unbookmark ${appDisplayName}` : `Bookmark ${appDisplayName}`}
+              aria-label={bookmarked ? `Unbookmark ${appDisplayName}` : `Bookmark ${appDisplayName}`}
+              onClick={() => toggleBookmark(app.id)}
+            >
+              <Bookmark
+                size={13}
+                fill={bookmarked ? 'currentColor' : 'none'}
+                style={{ color: bookmarked ? 'var(--color-warning)' : undefined }}
+              />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Configure application"
+              onClick={onOpenConfig}
+            >
+              <Settings size={13} />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Reload preview"
+              onClick={() => {
+                setFrameBlocked(false);
+                setIframeKey((k) => k + 1);
+              }}
+            >
+              <RefreshCw size={13} />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Enter full-screen workspace view"
+              aria-label="Enter full-screen workspace view"
+              onClick={handleEnterFullscreen}
+            >
+              <Maximize2 size={13} />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Open in new window"
+              onClick={() => {
+                if (previewUrl && previewUrl !== 'about:blank') {
+                  window.open(previewUrl, '_blank');
+                }
+              }}
+            >
+              <ExternalLink size={13} />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Stop application"
+              onClick={async () => {
+                await stopRunningApp(app.id);
+                updateAppStatus(app.id, 'stopped');
+              }}
+            >
+              <Square size={13} />
+            </button>
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-1)' }}>
-          <button
-            className="btn btn-icon btn-ghost btn-sm"
-            title={bookmarked ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
-            aria-label={bookmarked ? `Unbookmark ${app.repoName}` : `Bookmark ${app.repoName}`}
-            onClick={() => toggleBookmark(app.id)}
-          >
-            <Bookmark
-              size={13}
-              fill={bookmarked ? 'currentColor' : 'none'}
-              style={{ color: bookmarked ? 'var(--color-warning)' : undefined }}
-            />
-          </button>
-          <button
-            className="btn btn-icon btn-ghost btn-sm"
-            title="Configure application"
-            onClick={onOpenConfig}
-          >
-            <Settings size={13} />
-          </button>
-          <button
-            className="btn btn-icon btn-ghost btn-sm"
-            title="Reload preview"
-            onClick={() => {
-              setFrameBlocked(false);
-              setIframeKey((k) => k + 1);
-            }}
-          >
-            <RefreshCw size={13} />
-          </button>
-          <button
-            className="btn btn-icon btn-ghost btn-sm"
-            title="Open in new window"
-            onClick={() => {
-              if (previewUrl && previewUrl !== 'about:blank') {
-                window.open(previewUrl, '_blank');
-              }
-            }}
-          >
-            <ExternalLink size={13} />
-          </button>
-          <button
-            className="btn btn-icon btn-ghost btn-sm"
-            title="Stop application"
-            onClick={async () => {
-              await stopRunningApp(app.id);
-              updateAppStatus(app.id, 'stopped');
-            }}
-          >
-            <Square size={13} />
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* Real Application Preview in Iframe */}
-      <div style={{ flex: 1, position: 'relative', width: '100%', height: 'calc(100% - 36px)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        flex: 1,
+        position: 'relative',
+        width: '100%',
+        height: isFullscreen ? '100%' : 'calc(100% - 36px)',
+        display: 'flex',
+        flexDirection: 'column',
+      }}>
         {frameBlocked ? (
           <div className="preview-loading" style={{ flex: 1 }}>
             <AlertTriangle size={36} style={{ color: 'var(--color-warning)', marginBottom: 'var(--space-2)' }} />
@@ -1199,7 +1316,7 @@ function RunningAppView({
           <iframe
             key={iframeKey}
             src={previewUrl}
-            title={app.repoName}
+            title={appDisplayName}
             style={{
               width: '100%',
               height: '100%',

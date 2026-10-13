@@ -11,6 +11,7 @@ import {
   LogIn,
   ChevronDown,
   Bookmark,
+  Maximize2,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
 
@@ -219,7 +220,7 @@ export function Topbar() {
                           width: '6px', height: '6px',
                         }} />
                         <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {app.repoName}
+                          {app.displayName || app.repoName}
                         </span>
                       </button>
                     ))}
@@ -255,6 +256,16 @@ export function Topbar() {
               }}
             >
               <RefreshCw size={14} />
+            </button>
+            <button
+              className="btn btn-icon btn-ghost btn-sm"
+              title="Enter full-screen workspace view"
+              aria-label="Enter full-screen workspace view"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('repomova-enter-fullscreen', { detail: { appId: activeTab.appId } }));
+              }}
+            >
+              <Maximize2 size={14} />
             </button>
             <button
               className="btn btn-icon btn-ghost btn-sm"

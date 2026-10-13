@@ -163,7 +163,7 @@ export function WelcomeScreen({ isLoading: propLoading, error: propError }: Welc
     openTab({
       id: `tab-${app.id}`,
       appId: app.id,
-      title: app.repoName,
+      title: app.displayName || app.repoName,
       status: app.status,
     });
   }
@@ -311,11 +311,19 @@ export function WelcomeScreen({ isLoading: propLoading, error: propError }: Welc
                           }
                         }}
                       >
-                        <div className="dashboard-app-icon">
-                          <Folder size={16} />
+                        <div className="dashboard-app-icon" style={{ overflow: 'hidden' }}>
+                          {app.customThumbnail ? (
+                            <img
+                              src={app.customThumbnail}
+                              alt=""
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          ) : (
+                            <Folder size={16} />
+                          )}
                         </div>
                         <div className="dashboard-app-details">
-                          <div className="dashboard-app-name">{app.repoName}</div>
+                          <div className="dashboard-app-name">{app.displayName || app.repoName}</div>
                           <div className="dashboard-app-meta">
                             <span>{app.repoOwner}/{app.repoName}</span>
                             <span>·</span>
@@ -342,8 +350,8 @@ export function WelcomeScreen({ isLoading: propLoading, error: propError }: Welc
                         <button
                           className="btn btn-ghost btn-sm"
                           onClick={() => handleOpenApp(app)}
-                          title={`Open ${app.repoName}`}
-                          aria-label={`Open ${app.repoName}`}
+                          title={`Open ${app.displayName || app.repoName}`}
+                          aria-label={`Open ${app.displayName || app.repoName}`}
                         >
                           Open
                         </button>

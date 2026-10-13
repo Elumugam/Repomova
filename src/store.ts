@@ -30,6 +30,43 @@ function getInitialBookmarks(): string[] {
   return [];
 }
 
+interface AppCustomization {
+  displayName?: string;
+  customThumbnail?: string;
+}
+
+function getStoredAppCustomizations(): Record<string, AppCustomization> {
+  try {
+    const raw = localStorage.getItem('repomova-app-customizations');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
+  return {};
+}
+
+function saveAppCustomizations(customizations: Record<string, AppCustomization>): void {
+  try {
+    localStorage.setItem('repomova-app-customizations', JSON.stringify(customizations));
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+export function applyCustomizationsToApp(app: ConnectedApp): ConnectedApp {
+  const all = getStoredAppCustomizations();
+  const custom = all[app.id] || (app.repoFullName ? all[app.repoFullName] : undefined);
+  if (!custom) return app;
+  return {
+    ...app,
+    displayName: custom.displayName !== undefined ? custom.displayName : app.displayName,
+    customThumbnail: custom.customThumbnail !== undefined ? custom.customThumbnail : app.customThumbnail,
+  };
+}
+
 interface WorkspaceState {
   // ---- Theme ----
   theme: Theme;
@@ -141,8 +178,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // Connected Apps
   connectedApps: [],
-  setConnectedApps: (apps) => set({ connectedApps: apps }),
-  addConnectedApp: (app) => set((s) => ({ connectedApps: [...s.connectedApps, app] })),
+  setConnectedApps: (apps) => set({ connectedApps: apps.map(applyCustomizationsToApp) }),
+  addConnectedApp: (app) => set((s) => ({ connectedApps: [...s.connectedApps, applyCustomizationsToApp(app)] })),
   updateAppStatus: (appId, status) =>
     set((s) => ({
       connectedApps: s.connectedApps.map((a) =>
@@ -153,16 +190,57 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ),
     })),
   updateApp: (appId, updates) =>
-    set((s) => ({
-      connectedApps: s.connectedApps.map((a) =>
-        a.id === appId ? { ...a, ...updates, updatedAt: new Date().toISOString() } : a
-      ),
-    })),
+    set((s) => {
+      if (updates.displayName !== undefined || updates.customThumbnail !== undefined) {
+        const stored = getStoredAppCustomizations();
+        const app = s.connectedApps.find((a) => a.id === appId);
+        const existing = stored[appId] || (app?.repoFullName ? stored[app.repoFullName] : undefined) || {};
+        const updatedCustom = {
+          ...existing,
+          ...(updates.displayName !== undefined ? { displayName: updates.displayName } : {}),
+          ...(updates.customThumbnail !== undefined ? { customThumbnail: updates.customThumbnail } : {}),
+        };
+        stored[appId] = updatedCustom;
+        if (app?.repoFullName) {
+          stored[app.repoFullName] = updatedCustom;
+        }
+        saveAppCustomizations(stored);
+      }
+
+      const nextTabs = updates.displayName !== undefined
+        ? s.openTabs.map((t) => (t.appId === appId ? { ...t, title: updates.displayName || t.title } : t))
+        : s.openTabs;
+
+      return {
+        connectedApps: s.connectedApps.map((a) =>
+          a.id === appId ? { ...a, ...updates, updatedAt: new Date().toISOString() } : a
+        ),
+        openTabs: nextTabs,
+      };
+    }),
   removeConnectedApp: (appId) =>
     set((s) => {
+      const app = s.connectedApps.find((a) => a.id === appId);
       const nextBookmarks = s.bookmarkedAppIds.filter((id) => id !== appId);
       try {
         localStorage.setItem('repomova-bookmarks', JSON.stringify(nextBookmarks));
+      } catch {
+        // Ignore localStorage errors
+      }
+      try {
+        const stored = getStoredAppCustomizations();
+        let changed = false;
+        if (stored[appId]) {
+          delete stored[appId];
+          changed = true;
+        }
+        if (app?.repoFullName && stored[app.repoFullName]) {
+          delete stored[app.repoFullName];
+          changed = true;
+        }
+        if (changed) {
+          saveAppCustomizations(stored);
+        }
       } catch {
         // Ignore localStorage errors
       }
@@ -242,7 +320,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             ? {
                 ...t,
                 appId: app.id,
-                title: app.repoName,
+                title: app.displayName || app.repoName,
                 status: app.status,
                 previewUrl: app.previewUrl,
               }
@@ -260,9 +338,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const app = get().connectedApps.find((a) => a.id === appId);
     if (!app) return '';
 
+    const appName = app.displayName || app.repoName;
     const existingViews = get().openTabs.filter((t) => t.appId === app.id);
     const viewNumber = existingViews.length + 1;
-    const title = existingViews.length > 0 ? `${app.repoName} (${viewNumber})` : app.repoName;
+    const title = existingViews.length > 0 ? `${appName} (${viewNumber})` : appName;
     const newTabId = `tab-${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     const newTab: OpenTab = {
