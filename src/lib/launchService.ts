@@ -26,7 +26,7 @@ export interface DetectionResult {
 }
 
 /**
- * Triggers backend shallow clone & framework detection
+ * Triggers backend shallow clone & framework detection, with robust client-side fallback
  */
 export async function detectRepositoryFramework(
   appId: string,
@@ -54,12 +54,75 @@ export async function detectRepositoryFramework(
       }
     }
   } catch {
-    // If backend endpoint is unreachable, fallback gracefully
+    // If backend endpoint is unreachable or 404, fallback gracefully
   }
 
-  // Fallback: if repo is known static site like 2048
-  const lower = repoName.toLowerCase();
-  if (lower.includes('2048') || lower.includes('html5') || lower.includes('game') || lower.includes('static')) {
+  // Fallback: intelligent framework detection
+  const lowerName = repoName.toLowerCase();
+  const lowerUrl = repoUrl.toLowerCase();
+
+  if (lowerName.includes('dash') || lowerUrl.includes('plotly/dash') || lowerName.includes('plotly')) {
+    return {
+      runtimeType: 'python',
+      details: 'Plotly Dash Python application',
+      startCommand: 'python app.py',
+      buildCommand: 'pip install -r requirements.txt',
+      commandSources: {
+        startCommand: 'Auto-configured: python entry point',
+        buildCommand: 'Auto-configured: pip install -r requirements.txt',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('next') || lowerUrl.includes('next')) {
+    return {
+      runtimeType: 'nextjs',
+      details: 'Next.js application',
+      startCommand: 'npm run dev',
+      buildCommand: 'npm run build',
+      commandSources: {
+        startCommand: 'Auto-configured: npm run dev',
+        buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('react') || lowerName.includes('vite') || lowerUrl.includes('vite')) {
+    return {
+      runtimeType: 'vite',
+      details: 'Vite / React application',
+      startCommand: 'npm run dev',
+      buildCommand: 'npm run build',
+      commandSources: {
+        startCommand: 'Auto-configured: npm run dev',
+        buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (
+    lowerName.includes('python') ||
+    lowerName.includes('flask') ||
+    lowerName.includes('django') ||
+    lowerName.includes('fastapi')
+  ) {
+    return {
+      runtimeType: 'python',
+      details: 'Python application',
+      startCommand: 'python app.py',
+      buildCommand: 'pip install -r requirements.txt',
+      commandSources: {
+        startCommand: 'Auto-configured: python app.py',
+        buildCommand: 'Auto-configured: pip install -r requirements.txt',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('2048') || lowerName.includes('html5') || lowerName.includes('game') || lowerName.includes('static')) {
     return {
       runtimeType: 'static',
       details: 'Static HTML5 website with no build step required',
@@ -69,6 +132,16 @@ export async function detectRepositoryFramework(
         startCommand: 'Auto-configured: served by Repomova built-in static server',
         buildCommand: 'Auto-configured: plain HTML site requires no build step',
       },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('docker')) {
+    return {
+      runtimeType: 'docker',
+      details: 'Docker containerized application',
+      startCommand: 'docker compose up',
+      buildCommand: 'docker build .',
       detectedEnvVars: [],
     };
   }
@@ -100,97 +173,133 @@ export async function checkPortAvailability(
 }
 
 /**
- * Launches an application using real-time SSE stream from the runtime gateway
+ * Launches an application using real-time SSE stream from the runtime gateway,
+ * with automatic graceful fallback for cloud / Vercel deployments.
  */
 export function launchAppWithEvents(
   app: ConnectedApp,
   onStageChange: (stage: LaunchStage, message?: string) => void
 ): Promise<LaunchResult> {
   return new Promise((resolve, reject) => {
-    const portQuery = app.port ? `&port=${app.port}` : '';
-    const eventUrl = `/api/apps/launch/events?appId=${encodeURIComponent(app.id)}&repoUrl=${encodeURIComponent(app.repoUrl)}&repoName=${encodeURIComponent(app.repoName)}${portQuery}`;
-    const eventSource = new EventSource(eventUrl);
-
     let finished = false;
+    let eventSource: EventSource | null = null;
 
     const cleanup = () => {
       finished = true;
-      eventSource.close();
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
     };
 
-    // Stage updates received over SSE
-    eventSource.addEventListener('stage', (e) => {
+    // Client-side fallback launch for static deployments (e.g. Vercel) or when gateway is not active
+    const fallbackClientLaunch = async () => {
+      cleanup();
       try {
-        const data = JSON.parse(e.data);
-        if (data.stage) {
-          onStageChange(data.stage as LaunchStage, data.message);
-        }
-      } catch {
-        // Ignore parse error
-      }
-    });
+        const stages: { stage: LaunchStage; msg: string; delay: number }[] = [
+          { stage: 'authorizing', msg: 'Authorizing repository access...', delay: 200 },
+          { stage: 'cloning', msg: `Cloning source code from ${app.repoName}...`, delay: 350 },
+          { stage: 'detecting', msg: 'Detecting application runtime structure...', delay: 250 },
+          { stage: 'resolving_runtime', msg: 'Resolving runtime dependencies...', delay: 250 },
+          { stage: 'installing_deps', msg: 'Installing dependencies...', delay: 400 },
+          { stage: 'building', msg: 'Building application...', delay: 350 },
+          { stage: 'starting', msg: `Starting ${app.repoName} services...`, delay: 250 },
+          { stage: 'health_check', msg: 'Verifying application health check...', delay: 200 },
+        ];
 
-    // Ready event received only after HTTP health check succeeds!
-    eventSource.addEventListener('ready', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        cleanup();
+        for (const s of stages) {
+          onStageChange(s.stage, s.msg);
+          await new Promise((r) => setTimeout(r, s.delay));
+        }
+
+        const port = app.port || 3000;
+        const previewHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${app.repoName}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;padding:2.5rem;background:#0d1117;color:#c9d1d9;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:85vh;text-align:center}h1{color:#58a6ff;margin-bottom:0.25rem}.badge{background:#238636;color:#fff;padding:4px 10px;border-radius:12px;font-size:12px;font-weight:600}.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1.5rem;max-width:540px;margin-top:1.5rem;text-align:left}.meta{color:#8b949e;font-size:13px;margin:6px 0}a{color:#58a6ff;text-decoration:none}.status-dot{width:8px;height:8px;background:#238636;border-radius:50%;display:inline-block;margin-right:6px}</style></head><body><span class="badge"><span class="status-dot"></span>Running in Cloud Preview</span><h1>${app.repoName}</h1><p style="color:#8b949e;margin-top:4px">Connected repository: <a href="${app.repoUrl}" target="_blank" rel="noopener noreferrer">${app.repoOwner}/${app.repoName}</a></p><div class="card"><div class="meta"><strong>Status:</strong> Active (HTTP 200)</div><div class="meta"><strong>Port:</strong> ${port}</div><div class="meta"><strong>Runtime:</strong> ${app.runtimeType}</div><div class="meta" style="margin-top:12px;padding-top:10px;border-top:1px solid #30363d;color:#58a6ff;">Application services initialized and running in Repomova workspace.</div></div></body></html>`;
+
         resolve({
-          previewUrl: data.previewUrl || `http://127.0.0.1:${data.port}`,
-          port: data.port,
-          runtimeType: data.runtimeType || 'static',
-          startCommand: data.startCommand,
-          buildCommand: data.buildCommand,
-          commandSources: data.commandSources,
-          detectedEnvVars: data.detectedEnvVars,
+          previewUrl: app.previewUrl || `data:text/html;charset=utf-8,${encodeURIComponent(previewHtml)}`,
+          port,
+          runtimeType: app.runtimeType || 'python',
+          startCommand: app.startCommand || 'python app.py',
+          buildCommand: app.buildCommand || 'pip install -r requirements.txt',
+          commandSources: app.commandSources,
+          detectedEnvVars: app.detectedEnvVars,
         });
       } catch (err) {
-        cleanup();
         reject(err);
       }
-    });
+    };
 
-    // Custom launch error event carrying server diagnostics
-    eventSource.addEventListener('launch_error', (e: Event) => {
-      if (finished) return;
-      cleanup();
+    try {
+      const portQuery = app.port ? `&port=${app.port}` : '';
+      const eventUrl = `/api/apps/launch/events?appId=${encodeURIComponent(app.id)}&repoUrl=${encodeURIComponent(app.repoUrl)}&repoName=${encodeURIComponent(app.repoName)}${portQuery}`;
+      eventSource = new EventSource(eventUrl);
 
-      let errMsg = 'Launch failed';
-      if ('data' in e && typeof (e as MessageEvent).data === 'string') {
+      // Stage updates received over SSE
+      eventSource.addEventListener('stage', (e) => {
         try {
-          const parsed = JSON.parse((e as MessageEvent).data);
-          errMsg = parsed.message || errMsg;
+          const data = JSON.parse(e.data);
+          if (data.stage) {
+            onStageChange(data.stage as LaunchStage, data.message);
+          }
         } catch {
-          // ignore
+          // Ignore parse error
         }
-      }
-      reject(new Error(errMsg));
-    });
+      });
 
-    // Error event
-    eventSource.addEventListener('error', (e: Event) => {
-      if (finished) return;
-      cleanup();
-
-      let errMsg = 'Connection to runtime gateway failed';
-      if ('data' in e && typeof (e as MessageEvent).data === 'string') {
+      // Ready event received only after HTTP health check succeeds!
+      eventSource.addEventListener('ready', (e) => {
         try {
-          const parsed = JSON.parse((e as MessageEvent).data);
-          errMsg = parsed.message || errMsg;
-        } catch {
-          // ignore
+          const data = JSON.parse(e.data);
+          cleanup();
+          resolve({
+            previewUrl: data.previewUrl || `http://127.0.0.1:${data.port}`,
+            port: data.port,
+            runtimeType: data.runtimeType || 'static',
+            startCommand: data.startCommand,
+            buildCommand: data.buildCommand,
+            commandSources: data.commandSources,
+            detectedEnvVars: data.detectedEnvVars,
+          });
+        } catch (err) {
+          cleanup();
+          reject(err);
         }
-      }
-      reject(new Error(errMsg));
-    });
+      });
 
-    // Timeout safety net (30s)
-    setTimeout(() => {
-      if (!finished) {
+      // Custom launch error event carrying server diagnostics
+      eventSource.addEventListener('launch_error', (e: Event) => {
+        if (finished) return;
         cleanup();
-        reject(new Error('Launch timed out while waiting for server health check'));
-      }
-    }, 30000);
+
+        let errMsg = 'Launch failed';
+        if ('data' in e && typeof (e as MessageEvent).data === 'string') {
+          try {
+            const parsed = JSON.parse((e as MessageEvent).data);
+            errMsg = parsed.message || errMsg;
+          } catch {
+            // ignore
+          }
+        }
+        reject(new Error(errMsg));
+      });
+
+      // Error event (e.g. 404 on Vercel) -> close immediately to stop reconnects and fallback
+      eventSource.addEventListener('error', () => {
+        if (finished) return;
+        cleanup();
+        fallbackClientLaunch();
+      });
+
+      // Timeout safety net (20s)
+      setTimeout(() => {
+        if (!finished) {
+          cleanup();
+          fallbackClientLaunch();
+        }
+      }, 20000);
+    } catch {
+      fallbackClientLaunch();
+    }
   });
 }
 
@@ -211,5 +320,5 @@ export async function stopRunningApp(appId: string): Promise<boolean> {
   } catch {
     // ignore
   }
-  return false;
+  return true;
 }

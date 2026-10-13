@@ -12,7 +12,16 @@ export function guessRuntimeType(name: string, language?: string): RuntimeType {
   const lower = name.toLowerCase();
   if (lower.includes('next')) return 'nextjs';
   if (lower.includes('react') || lower.includes('vite')) return 'vite';
-  if (lower.includes('python') || lower.includes('flask') || lower.includes('django') || lower.includes('fastapi')) return 'python';
+  if (
+    lower.includes('python') ||
+    lower.includes('flask') ||
+    lower.includes('django') ||
+    lower.includes('fastapi') ||
+    lower.includes('dash') ||
+    lower.includes('plotly')
+  ) {
+    return 'python';
+  }
   if (lower.includes('docker')) return 'docker';
   if (lower.includes('2048') || lower.includes('static') || lower.includes('html5') || language?.toLowerCase() === 'html') return 'static';
   if (language?.toLowerCase() === 'python') return 'python';
