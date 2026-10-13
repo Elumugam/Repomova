@@ -46,9 +46,15 @@ export type RuntimeType =
   | 'react'
   | 'vite'
   | 'nextjs'
+  | 'vue'
+  | 'angular'
+  | 'svelte'
   | 'static'
   | 'node'
   | 'python'
+  | 'backend'
+  | 'cli'
+  | 'library'
   | 'docker'
   | 'unknown';
 
@@ -56,12 +62,22 @@ export const RUNTIME_LABELS: Record<RuntimeType, string> = {
   react: 'React',
   vite: 'Vite',
   nextjs: 'Next.js',
+  vue: 'Vue',
+  angular: 'Angular',
+  svelte: 'Svelte',
   static: 'Static Site',
   node: 'Node.js',
   python: 'Python',
+  backend: 'Backend API / Service',
+  cli: 'CLI Tool',
+  library: 'Library / Package',
   docker: 'Docker',
   unknown: 'Unknown',
 };
+
+export function isFrontendRuntime(type: RuntimeType): boolean {
+  return ['static', 'react', 'vite', 'nextjs', 'vue', 'angular', 'svelte'].includes(type);
+}
 
 export interface DetectedEnvVar {
   key: string;
@@ -99,6 +115,10 @@ export interface ConnectedApp {
   detectedEnvVars?: DetectedEnvVar[];
   envVars?: Record<string, string>;
   lockfileHash?: string;
+  hasWebInterface?: boolean;
+  entryPoint?: string;
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  lastError?: string;
 }
 
 // ---------- Open Tab ----------

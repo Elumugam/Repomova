@@ -27,6 +27,8 @@ export function Sidebar() {
     setConnectModalOpen,
     connectedApps,
     openTabs,
+    openTab,
+    setActiveTab,
     theme,
     toggleTheme,
     user,
@@ -141,7 +143,17 @@ export function Sidebar() {
                   key={app.id}
                   className="sidebar-item"
                   onClick={() => {
-                    /* Will open the app tab */
+                    const existingTab = openTabs.find((t) => t.appId === app.id);
+                    if (existingTab) {
+                      setActiveTab(existingTab.id);
+                    } else {
+                      openTab({
+                        id: `tab-${app.id}`,
+                        appId: app.id,
+                        title: app.repoName,
+                        status: app.status,
+                      });
+                    }
                   }}
                 >
                   <span className="status-dot status-running" />
@@ -166,7 +178,7 @@ export function Sidebar() {
                   key={tab.id}
                   className="sidebar-item"
                   onClick={() => {
-                    /* Will switch to tab */
+                    setActiveTab(tab.id);
                   }}
                 >
                   <LayoutGrid size={14} className="sidebar-item-icon" />

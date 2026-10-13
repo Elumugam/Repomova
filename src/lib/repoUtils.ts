@@ -10,7 +10,12 @@ export function parseGitHubUrl(url: string): { owner: string; name: string } | n
 
 export function guessRuntimeType(name: string, language?: string): RuntimeType {
   const lower = name.toLowerCase();
+  const langLower = language?.toLowerCase();
+
   if (lower.includes('next')) return 'nextjs';
+  if (lower.includes('nuxt') || lower.includes('vue')) return 'vue';
+  if (lower.includes('angular')) return 'angular';
+  if (lower.includes('svelte')) return 'svelte';
   if (lower.includes('react') || lower.includes('vite')) return 'vite';
   if (
     lower.includes('python') ||
@@ -18,13 +23,16 @@ export function guessRuntimeType(name: string, language?: string): RuntimeType {
     lower.includes('django') ||
     lower.includes('fastapi') ||
     lower.includes('dash') ||
-    lower.includes('plotly')
+    lower.includes('plotly') ||
+    langLower === 'python'
   ) {
     return 'python';
   }
   if (lower.includes('docker')) return 'docker';
-  if (lower.includes('2048') || lower.includes('static') || lower.includes('html5') || language?.toLowerCase() === 'html') return 'static';
-  if (language?.toLowerCase() === 'python') return 'python';
-  if (language?.toLowerCase() === 'typescript' || language?.toLowerCase() === 'javascript') return 'node';
+  if (lower.includes('2048') || lower.includes('static') || lower.includes('html5') || langLower === 'html') return 'static';
+  if (langLower === 'typescript' || langLower === 'javascript') return 'node';
+  if (lower.includes('backend') || lower.includes('api') || lower.includes('server')) return 'backend';
+  if (lower.includes('cli') || lower.includes('tool')) return 'cli';
+  if (lower.includes('lib') || lower.includes('sdk') || lower.includes('package')) return 'library';
   return 'unknown';
 }

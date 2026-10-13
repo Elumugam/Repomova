@@ -91,6 +91,106 @@ describe('runtimeGateway', () => {
       expect(res.runtimeType).toBe('docker');
       expect(res.startCommand).toBe('docker build & run');
     });
+
+    it('detects Vue, Angular, and Svelte frontend framework projects', () => {
+      // Vue
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          dependencies: { vue: '^3.3.0' },
+          scripts: { dev: 'vite' },
+        })
+      );
+      let res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('vue');
+      expect(res.hasWebInterface).toBe(true);
+      expect(res.startCommand).toBe('npm run dev');
+
+      // Angular
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          dependencies: { '@angular/core': '^17.0.0' },
+          scripts: { start: 'ng serve' },
+        })
+      );
+      res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('angular');
+      expect(res.hasWebInterface).toBe(true);
+      expect(res.startCommand).toBe('npm start');
+
+      // Svelte
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          devDependencies: { svelte: '^4.0.0' },
+          scripts: { dev: 'vite dev' },
+        })
+      );
+      res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('svelte');
+      expect(res.hasWebInterface).toBe(true);
+    });
+
+    it('detects backend-only API services with hasWebInterface=false', () => {
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'payment-api-service',
+          dependencies: { express: '^4.18.0', cors: '^2.8.5' },
+          scripts: { start: 'node server.js' },
+        })
+      );
+      fs.writeFileSync(path.join(tempDir, 'server.js'), 'const express = require("express");');
+
+      const res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('backend');
+      expect(res.hasWebInterface).toBe(false);
+      expect(res.startCommand).toBe('npm start');
+      expect(res.details).toContain('Backend API');
+    });
+
+    it('detects CLI tools and libraries with hasWebInterface=false and appropriate metadata', () => {
+      // CLI Tool with bin
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'repomova-cli-tool',
+          bin: { 'my-cli': './bin/index.js' },
+          scripts: { test: 'jest' },
+        })
+      );
+      let res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('cli');
+      expect(res.hasWebInterface).toBe(false);
+      expect(res.details).toContain('CLI');
+
+      // Library package
+      fs.writeFileSync(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify({
+          name: 'awesome-math-lib',
+          main: 'dist/index.js',
+          types: 'dist/index.d.ts',
+        })
+      );
+      res = detectFramework(tempDir);
+      expect(res.runtimeType).toBe('library');
+      expect(res.hasWebInterface).toBe(false);
+      expect(res.details).toContain('Library');
+    });
+
+    it('handles projects with missing package configuration or non-web files without throwing', () => {
+      // No package.json, just arbitrary files
+      fs.writeFileSync(path.join(tempDir, 'data.csv'), 'id,name\n1,test');
+      fs.writeFileSync(path.join(tempDir, 'script.sh'), '#!/bin/bash\necho "run"');
+
+      const res = detectFramework(tempDir);
+      expect(res.hasWebInterface).toBe(false);
+      expect(res.runtimeType).toBe('unknown');
+      expect(res.noWebEntry).toBe(true);
+      expect(res.details).toContain('No web entry file found');
+    });
   });
 
   describe('parseEnvExample', () => {

@@ -21,7 +21,10 @@ export function ConnectedAppsView() {
   const {
     connectedApps,
     setConnectModalOpen,
+    openTabs,
     openTab,
+    openNewWindow,
+    setActiveTab,
     removeConnectedApp,
     updateAppStatus,
   } = useWorkspaceStore();
@@ -39,12 +42,21 @@ export function ConnectedAppsView() {
   });
 
   function handleOpenApp(app: ConnectedApp) {
-    openTab({
-      id: `tab-${app.id}`,
-      appId: app.id,
-      title: app.repoName,
-      status: app.status,
-    });
+    const existing = openTabs.find((t) => t.appId === app.id);
+    if (existing) {
+      setActiveTab(existing.id);
+    } else {
+      openTab({
+        id: `tab-${app.id}`,
+        appId: app.id,
+        title: app.repoName,
+        status: app.status,
+      });
+    }
+  }
+
+  function handleOpenNewWindow(app: ConnectedApp) {
+    openNewWindow(app.id);
   }
 
   function handleStopApp(app: ConnectedApp) {
@@ -52,9 +64,7 @@ export function ConnectedAppsView() {
   }
 
   function handleStartApp(app: ConnectedApp) {
-    updateAppStatus(app.id, 'starting');
-    // Simulate start
-    setTimeout(() => updateAppStatus(app.id, 'running'), 2000);
+    handleOpenApp(app);
   }
 
   function handleDisconnect(app: ConnectedApp) {
@@ -208,6 +218,17 @@ export function ConnectedAppsView() {
                         boxShadow: 'var(--shadow-lg)',
                       }}
                     >
+                      <button
+                        className="sidebar-item"
+                        style={{ width: '100%' }}
+                        onClick={() => {
+                          handleOpenNewWindow(app);
+                          setMenuOpenId(null);
+                        }}
+                      >
+                        <Plus size={14} />
+                        <span>Open New Window</span>
+                      </button>
                       <button
                         className="sidebar-item"
                         style={{ width: '100%', color: 'var(--color-error)' }}

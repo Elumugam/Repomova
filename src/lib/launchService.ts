@@ -4,6 +4,10 @@ export interface LaunchResult {
   previewUrl: string;
   port: number;
   runtimeType: RuntimeType;
+  hasWebInterface?: boolean;
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  entryPoint?: string;
+  details?: string;
   startCommand?: string;
   buildCommand?: string;
   commandSources?: {
@@ -16,6 +20,9 @@ export interface LaunchResult {
 export interface DetectionResult {
   runtimeType: RuntimeType;
   details?: string;
+  hasWebInterface?: boolean;
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  entryPoint?: string;
   startCommand?: string;
   buildCommand?: string;
   commandSources?: {
@@ -46,6 +53,9 @@ export async function detectRepositoryFramework(
         return {
           runtimeType: data.runtimeType,
           details: data.details,
+          hasWebInterface: data.hasWebInterface,
+          projectTypeCategory: data.projectTypeCategory,
+          entryPoint: data.entryPoint,
           startCommand: data.startCommand,
           buildCommand: data.buildCommand,
           commandSources: data.commandSources,
@@ -65,6 +75,8 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'python',
       details: 'Plotly Dash Python application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       startCommand: 'python app.py',
       buildCommand: 'pip install -r requirements.txt',
       commandSources: {
@@ -79,6 +91,56 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'nextjs',
       details: 'Next.js application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
+      startCommand: 'npm run dev',
+      buildCommand: 'npm run build',
+      commandSources: {
+        startCommand: 'Auto-configured: npm run dev',
+        buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('vue') || lowerName.includes('nuxt')) {
+    return {
+      runtimeType: 'vue',
+      details: 'Vue application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
+      startCommand: 'npm run dev',
+      buildCommand: 'npm run build',
+      commandSources: {
+        startCommand: 'Auto-configured: npm run dev',
+        buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('angular')) {
+    return {
+      runtimeType: 'angular',
+      details: 'Angular application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
+      startCommand: 'npm start',
+      buildCommand: 'npm run build',
+      commandSources: {
+        startCommand: 'Auto-configured: npm start',
+        buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('svelte')) {
+    return {
+      runtimeType: 'svelte',
+      details: 'Svelte application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       startCommand: 'npm run dev',
       buildCommand: 'npm run build',
       commandSources: {
@@ -93,11 +155,51 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'vite',
       details: 'Vite / React application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       startCommand: 'npm run dev',
       buildCommand: 'npm run build',
       commandSources: {
         startCommand: 'Auto-configured: npm run dev',
         buildCommand: 'Auto-configured: npm run build',
+      },
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('cli') || lowerName.includes('tool')) {
+    return {
+      runtimeType: 'cli',
+      details: 'Command-line tool (CLI)',
+      hasWebInterface: false,
+      projectTypeCategory: 'cli',
+      entryPoint: 'bin/cli.js',
+      startCommand: 'node bin/cli.js',
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('lib') || lowerName.includes('sdk') || lowerName.includes('package')) {
+    return {
+      runtimeType: 'library',
+      details: 'Software library / package',
+      hasWebInterface: false,
+      projectTypeCategory: 'library',
+      entryPoint: 'index.js',
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('backend') || lowerName.includes('api') || lowerName.includes('server') || lowerName.includes('microservice')) {
+    return {
+      runtimeType: 'backend',
+      details: 'Backend API service',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
+      entryPoint: 'server.js',
+      startCommand: 'npm start',
+      commandSources: {
+        startCommand: 'Auto-configured: backend service start',
       },
       detectedEnvVars: [],
     };
@@ -112,6 +214,8 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'python',
       details: 'Python application',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
       startCommand: 'python app.py',
       buildCommand: 'pip install -r requirements.txt',
       commandSources: {
@@ -126,6 +230,8 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'static',
       details: 'Static HTML5 website with no build step required',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       startCommand: 'Built-in Static Server',
       buildCommand: 'None (Static files)',
       commandSources: {
@@ -140,13 +246,20 @@ export async function detectRepositoryFramework(
     return {
       runtimeType: 'docker',
       details: 'Docker containerized application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       startCommand: 'docker compose up',
       buildCommand: 'docker build .',
       detectedEnvVars: [],
     };
   }
 
-  return { runtimeType: 'unknown', details: 'Unrecognized runtime structure' };
+  return {
+    runtimeType: 'unknown',
+    details: 'Unrecognized runtime structure',
+    hasWebInterface: false,
+    projectTypeCategory: 'unknown',
+  };
 }
 
 /**
@@ -252,9 +365,13 @@ export function launchAppWithEvents(
           const data = JSON.parse(e.data);
           cleanup();
           resolve({
-            previewUrl: data.previewUrl || `http://127.0.0.1:${data.port}`,
+            previewUrl: data.previewUrl || (data.port ? `http://127.0.0.1:${data.port}` : ''),
             port: data.port,
             runtimeType: data.runtimeType || 'static',
+            hasWebInterface: data.hasWebInterface,
+            projectTypeCategory: data.projectTypeCategory,
+            entryPoint: data.entryPoint,
+            details: data.details,
             startCommand: data.startCommand,
             buildCommand: data.buildCommand,
             commandSources: data.commandSources,

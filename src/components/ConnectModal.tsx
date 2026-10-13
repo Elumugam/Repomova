@@ -2,7 +2,7 @@
    Connect Repository Modal
    ============================================ */
 import { useState } from 'react';
-import { X, Link2, ArrowRight, Check, Loader2, Globe } from 'lucide-react';
+import { X, Link2, ArrowRight, Check, Loader2, Globe, Info } from 'lucide-react';
 import { Github } from './GithubIcon';
 import { useWorkspaceStore } from '../store';
 import type { ConnectedApp, RuntimeType } from '../types';
@@ -71,6 +71,9 @@ export function ConnectModal() {
       cloneStatus: 'cloned',
       runtimeType: detectedRuntime,
       status: 'connected',
+      hasWebInterface: detectionRes?.hasWebInterface,
+      entryPoint: detectionRes?.entryPoint,
+      projectTypeCategory: detectionRes?.projectTypeCategory,
       detectionDetails: detectionRes?.details,
       startCommand: detectionRes?.startCommand,
       buildCommand: detectionRes?.buildCommand,
@@ -176,6 +179,29 @@ export function ConnectModal() {
               {urlError && <div className="input-error-msg">{urlError}</div>}
               <div className="input-hint">
                 Supports public repositories. Private repos require GitHub authorization.
+              </div>
+
+              {/* Guidance Note */}
+              <div
+                className="connect-guidance-note"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 'var(--space-2)',
+                  padding: 'var(--space-3)',
+                  background: 'var(--color-bg-secondary)',
+                  border: '1px solid var(--color-border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  marginTop: 'var(--space-3)',
+                  fontSize: 'var(--font-size-xs)',
+                  color: 'var(--color-text-secondary)',
+                  lineHeight: 1.5,
+                }}
+              >
+                <Info size={14} style={{ color: 'var(--color-text-tertiary)', flexShrink: 0, marginTop: '2px' }} />
+                <span>
+                  For the best Repomova experience, connect a repository containing a runnable frontend or web application. Projects built with React, Vite, Next.js, Vue, HTML/CSS/JavaScript, and other supported frontend frameworks can be opened in the workspace. Backend-only projects, CLI tools, and libraries may require additional configuration and might not provide a graphical interface.
+                </span>
               </div>
 
               {/* Parsed preview */}

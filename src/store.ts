@@ -53,6 +53,7 @@ interface WorkspaceState {
   openTabs: OpenTab[];
   activeTabId: string | null;
   openTab: (tab: OpenTab) => void;
+  openNewWindow: (appId?: string) => string;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
 
@@ -146,12 +147,52 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   activeTabId: null,
   openTab: (tab) =>
     set((s) => {
-      const existing = s.openTabs.find((t) => t.appId === tab.appId);
+      const existing = s.openTabs.find((t) => t.id === tab.id);
       if (existing) return { activeTabId: existing.id };
       return { openTabs: [...s.openTabs, tab], activeTabId: tab.id };
     }),
+  openNewWindow: (appId?: string) => {
+    let newTabId = '';
+    set((s) => {
+      let targetAppId = appId;
+      if (!targetAppId) {
+        const activeTab = s.openTabs.find((t) => t.id === s.activeTabId);
+        if (activeTab) {
+          targetAppId = activeTab.appId;
+        } else if (s.connectedApps.length > 0) {
+          targetAppId = s.connectedApps[0].id;
+        }
+      }
+      if (!targetAppId) return s;
+
+      const app = s.connectedApps.find((a) => a.id === targetAppId);
+      if (!app) return s;
+
+      const existingViews = s.openTabs.filter((t) => t.appId === app.id);
+      const viewNumber = existingViews.length + 1;
+      const title = existingViews.length > 0 ? `${app.repoName} (${viewNumber})` : app.repoName;
+      newTabId = `tab-${app.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+      const newTab: OpenTab = {
+        id: newTabId,
+        appId: app.id,
+        title,
+        status: app.status,
+        previewUrl: app.previewUrl,
+      };
+
+      return {
+        openTabs: [...s.openTabs, newTab],
+        activeTabId: newTabId,
+      };
+    });
+    return newTabId;
+  },
   closeTab: (tabId) =>
     set((s) => {
+      if (tabId === 'all') {
+        return { openTabs: [], activeTabId: null };
+      }
       const remaining = s.openTabs.filter((t) => t.id !== tabId);
       let nextActive = s.activeTabId;
       if (s.activeTabId === tabId) {

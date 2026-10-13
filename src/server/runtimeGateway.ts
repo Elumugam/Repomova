@@ -28,6 +28,10 @@ export interface FrameworkDetectionResult {
   hasBuildScript?: boolean;
   needsBuild?: boolean;
   noWebEntry?: boolean;
+  hasWebInterface?: boolean;
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  missingConfigReason?: string;
+  entryPoint?: string;
   startCommand?: string;
   buildCommand?: string;
   commandSources?: {
@@ -211,12 +215,20 @@ export function parseEnvExample(dir: string): DetectedEnvVar[] {
 // Inspect and detect framework & entry points in cloned directory
 export function detectFramework(dir: string): FrameworkDetectionResult {
   if (!fs.existsSync(dir)) {
-    return { runtimeType: 'unknown', details: 'Directory does not exist' };
+    return { runtimeType: 'unknown', details: 'Directory does not exist', hasWebInterface: false };
   }
 
   const detectedEnvVars = parseEnvExample(dir);
   const pkgJsonPath = path.join(dir, 'package.json');
   const entry = findEntryPoint(dir);
+
+  // Check if Python repo indicators exist
+  const hasPyFiles =
+    fs.existsSync(path.join(dir, 'requirements.txt')) ||
+    fs.existsSync(path.join(dir, 'pyproject.toml')) ||
+    fs.existsSync(path.join(dir, 'app.py')) ||
+    fs.existsSync(path.join(dir, 'main.py')) ||
+    fs.existsSync(path.join(dir, 'setup.py'));
 
   // 1. Check package.json projects
   if (fs.existsSync(pkgJsonPath)) {
@@ -225,23 +237,76 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
       const scripts = (pkg.scripts || {}) as Record<string, string>;
 
+      const hasDev = Boolean(scripts.dev);
+      const hasStart = Boolean(scripts.start);
+      const hasBuild = Boolean(scripts.build);
+
       let runtimeType: RuntimeType = 'node';
       let details = 'Node.js application';
+      let hasWebInterface = true;
+      let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown' = 'frontend';
+      let missingConfigReason: string | undefined;
+      let entryPoint: string | undefined = pkg.main;
 
       if (allDeps['next']) {
         runtimeType = 'nextjs';
         details = 'Next.js application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
       } else if (allDeps['vite']) {
         runtimeType = 'vite';
         details = 'Vite application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
+      } else if (allDeps['vue'] || allDeps['@vue/runtime-core'] || allDeps['@vue/cli-service'] || allDeps['nuxt']) {
+        runtimeType = 'vue';
+        details = 'Vue application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
+      } else if (allDeps['@angular/core']) {
+        runtimeType = 'angular';
+        details = 'Angular application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
+      } else if (allDeps['svelte'] || allDeps['@sveltejs/kit']) {
+        runtimeType = 'svelte';
+        details = 'Svelte application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
       } else if (allDeps['react'] || allDeps['react-scripts']) {
         runtimeType = 'react';
         details = 'React application';
+        hasWebInterface = true;
+        projectTypeCategory = 'frontend';
+      } else if (allDeps['express'] || allDeps['fastify'] || allDeps['koa'] || allDeps['@nestjs/core'] || allDeps['hapi']) {
+        runtimeType = 'backend';
+        details = 'Node.js Backend API / Service';
+        hasWebInterface = false;
+        projectTypeCategory = 'backend';
+      } else if (pkg.bin || allDeps['commander'] || allDeps['yargs'] || allDeps['meow'] || allDeps['cac'] || allDeps['clack']) {
+        runtimeType = 'cli';
+        details = 'Node.js Command-Line Interface (CLI) Tool';
+        hasWebInterface = false;
+        projectTypeCategory = 'cli';
+        entryPoint = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin ? Object.values(pkg.bin)[0] as string : pkg.main;
+      } else if ((pkg.main || pkg.types || pkg.exports) && !hasDev && !hasStart && !entry) {
+        runtimeType = 'library';
+        details = 'JavaScript / TypeScript Library';
+        hasWebInterface = false;
+        projectTypeCategory = 'library';
+      } else if (!hasDev && !hasStart && !pkg.main && !entry) {
+        missingConfigReason = 'package.json is missing required start/dev scripts and main entry point.';
+        runtimeType = 'node';
+        details = 'Node.js project with missing configuration';
+        hasWebInterface = false;
+        projectTypeCategory = 'unknown';
+      } else if (!entry) {
+        // Node service without frontend HTML
+        runtimeType = 'backend';
+        details = 'Node.js Service (no web frontend)';
+        hasWebInterface = false;
+        projectTypeCategory = 'backend';
       }
-
-      const hasDev = Boolean(scripts.dev);
-      const hasStart = Boolean(scripts.start);
-      const hasBuild = Boolean(scripts.build);
 
       const startCommand = hasDev ? 'npm run dev' : hasStart ? 'npm start' : 'node index.js';
       const startSource = hasDev
@@ -259,6 +324,10 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       return {
         runtimeType,
         details,
+        hasWebInterface,
+        projectTypeCategory,
+        missingConfigReason,
+        entryPoint,
         serveDir,
         entryFile: entry ? entry.entryFile : undefined,
         hasBuildScript: hasBuild,
@@ -272,16 +341,109 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
         detectedEnvVars,
       };
     } catch {
-      return { runtimeType: 'node', details: 'Node.js application', detectedEnvVars, serveDir: dir };
+      return {
+        runtimeType: 'node',
+        details: 'Node.js application',
+        detectedEnvVars,
+        serveDir: dir,
+        hasWebInterface: false,
+        projectTypeCategory: 'backend',
+      };
     }
   }
 
-  // 2. Static site detection: entry point found (index.html at root, dist, build, public, docs)
+  // 2. Python detection (takes priority over stray docs/index.html in Python repos)
+  if (hasPyFiles) {
+    let reqContent = '';
+    const reqPath = path.join(dir, 'requirements.txt');
+    if (fs.existsSync(reqPath)) {
+      try { reqContent = fs.readFileSync(reqPath, 'utf8').toLowerCase(); } catch { /* ignore */ }
+    }
+    const pyprojPath = path.join(dir, 'pyproject.toml');
+    if (fs.existsSync(pyprojPath)) {
+      try { reqContent += fs.readFileSync(pyprojPath, 'utf8').toLowerCase(); } catch { /* ignore */ }
+    }
+
+    const hasTemplates =
+      fs.existsSync(path.join(dir, 'templates', 'index.html')) ||
+      fs.existsSync(path.join(dir, 'static', 'index.html'));
+
+    const isDashOrStreamlit =
+      reqContent.includes('dash') ||
+      reqContent.includes('streamlit') ||
+      reqContent.includes('gradio') ||
+      reqContent.includes('plotly');
+
+    const isBackendApi =
+      reqContent.includes('fastapi') ||
+      reqContent.includes('flask') ||
+      reqContent.includes('django') ||
+      reqContent.includes('tornado') ||
+      reqContent.includes('uvicorn');
+
+    const isCli =
+      reqContent.includes('click') ||
+      reqContent.includes('typer') ||
+      fs.existsSync(path.join(dir, 'cli.py'));
+
+    const isLibrary =
+      (fs.existsSync(path.join(dir, 'setup.py')) || fs.existsSync(path.join(dir, 'pyproject.toml'))) &&
+      !isDashOrStreamlit &&
+      !isBackendApi &&
+      !isCli;
+
+    const entryPy = fs.existsSync(path.join(dir, 'main.py')) ? 'python main.py' : 'python app.py';
+
+    let runtimeType: RuntimeType = 'python';
+    let details = 'Python application';
+    let hasWebInterface = false;
+    let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' = 'backend';
+
+    if (isDashOrStreamlit || hasTemplates) {
+      runtimeType = 'python';
+      details = isDashOrStreamlit ? 'Plotly Dash / Streamlit Web Application' : 'Python Web Application';
+      hasWebInterface = true;
+      projectTypeCategory = 'frontend';
+    } else if (isCli) {
+      runtimeType = 'cli';
+      details = 'Python Command-Line Tool (CLI)';
+      hasWebInterface = false;
+      projectTypeCategory = 'cli';
+    } else if (isLibrary) {
+      runtimeType = 'library';
+      details = 'Python Library / Package';
+      hasWebInterface = false;
+      projectTypeCategory = 'library';
+    } else if (isBackendApi) {
+      runtimeType = 'python';
+      details = 'Python REST API / Backend Service';
+      hasWebInterface = false;
+      projectTypeCategory = 'backend';
+    }
+
+    return {
+      runtimeType,
+      details,
+      hasWebInterface,
+      projectTypeCategory,
+      entryPoint: fs.existsSync(path.join(dir, 'main.py')) ? 'main.py' : 'app.py',
+      serveDir: dir,
+      startCommand: entryPy,
+      commandSources: {
+        startCommand: 'Detected from Python repository structure',
+      },
+      detectedEnvVars,
+    };
+  }
+
+  // 3. Static site detection: true web entry point found (root, dist, build, public, www, site)
   if (entry) {
     const locDesc = entry.relativeDir === '.' ? 'root' : `${entry.relativeDir}/`;
     return {
       runtimeType: 'static',
       details: `Static HTML5 website (entry file: ${locDesc}index.html)`,
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       serveDir: entry.serveDir,
       entryFile: entry.entryFile,
       startCommand: 'Built-in Static Server',
@@ -294,32 +456,14 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
     };
   }
 
-  // 3. Python detection
-  if (
-    fs.existsSync(path.join(dir, 'requirements.txt')) ||
-    fs.existsSync(path.join(dir, 'pyproject.toml')) ||
-    fs.existsSync(path.join(dir, 'app.py')) ||
-    fs.existsSync(path.join(dir, 'main.py'))
-  ) {
-    const entryPy = fs.existsSync(path.join(dir, 'main.py')) ? 'python main.py' : 'python app.py';
-    return {
-      runtimeType: 'python',
-      details: 'Python application',
-      serveDir: dir,
-      startCommand: entryPy,
-      commandSources: {
-        startCommand: 'Detected from Python repository structure',
-      },
-      detectedEnvVars,
-    };
-  }
-
   // 4. Docker detection
   if (fs.existsSync(path.join(dir, 'Dockerfile')) || fs.existsSync(path.join(dir, 'docker-compose.yml'))) {
     const isCompose = fs.existsSync(path.join(dir, 'docker-compose.yml'));
     return {
       runtimeType: 'docker',
       details: 'Docker containerized application',
+      hasWebInterface: true,
+      projectTypeCategory: 'frontend',
       serveDir: dir,
       startCommand: isCompose ? 'docker compose up' : 'docker build & run',
       commandSources: {
@@ -329,7 +473,7 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
     };
   }
 
-  // 5. Native desktop / compiled application without web entry point (e.g., Cubes2: main.c, makefile, compile.sh)
+  // 5. Native desktop / compiled application without web entry point
   if (
     fs.existsSync(path.join(dir, 'makefile')) ||
     fs.existsSync(path.join(dir, 'Makefile')) ||
@@ -342,6 +486,8 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       details: 'Native desktop application (C/C++ makefile project, no web entry point)',
       serveDir: dir,
       noWebEntry: true,
+      hasWebInterface: false,
+      projectTypeCategory: 'cli',
       detectedEnvVars,
     };
   }
@@ -351,6 +497,9 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
     details: 'No web entry file found (index.html missing in root, dist, build, public, docs)',
     serveDir: dir,
     noWebEntry: true,
+    hasWebInterface: false,
+    projectTypeCategory: 'unknown',
+    missingConfigReason: 'No runnable web entry point found.',
     detectedEnvVars,
   };
 }
@@ -661,6 +810,10 @@ export function runtimeGatewayPlugin(): Plugin {
                 details: detection.details,
                 serveDir: detection.serveDir,
                 entryFile: detection.entryFile,
+                hasWebInterface: detection.hasWebInterface,
+                projectTypeCategory: detection.projectTypeCategory,
+                missingConfigReason: detection.missingConfigReason,
+                entryPoint: detection.entryPoint,
                 startCommand: detection.startCommand,
                 buildCommand: detection.buildCommand,
                 commandSources: detection.commandSources,
@@ -747,11 +900,62 @@ export function runtimeGatewayPlugin(): Plugin {
             sendEvent('stage', { stage: 'detecting', message: 'Detecting framework & entry points...' });
             const detection = detectFramework(repoDir);
 
-            // If repository has no web entry point (e.g. Cubes2 native C desktop app), reject launch immediately!
-            if (detection.noWebEntry) {
-              throw new Error(
-                `No web entry point found (index.html missing in root, dist, build, public, docs). ${detection.details}. Served directory: ${repoDir}`
-              );
+            // Handle repositories without directly viewable graphical interfaces (Backend, CLI, Library)
+            if (!detection.hasWebInterface) {
+              if (detection.runtimeType === 'backend') {
+                sendEvent('stage', {
+                  stage: 'resolving_runtime',
+                  runtimeType: detection.runtimeType,
+                  message: `Resolved backend runtime: ${detection.runtimeType} (${detection.details})`,
+                });
+                sendEvent('stage', { stage: 'starting', port, message: `Configured backend service on port ${port}...` });
+
+                sendEvent('ready', {
+                  stage: 'ready',
+                  status: 'running' as AppStatus,
+                  port,
+                  previewUrl: `http://127.0.0.1:${port}`,
+                  runtimeType: detection.runtimeType,
+                  hasWebInterface: false,
+                  projectTypeCategory: 'backend',
+                  details: detection.details,
+                  entryPoint: detection.entryPoint,
+                  startCommand: detection.startCommand,
+                  buildCommand: detection.buildCommand,
+                  commandSources: detection.commandSources,
+                  detectedEnvVars: detection.detectedEnvVars,
+                  servedDir: currentServeDir,
+                });
+                res.end();
+                return;
+              } else {
+                // CLI tools, Libraries, Unknown:
+                // Never display a false running status! Status remains connected.
+                sendEvent('stage', {
+                  stage: 'resolving_runtime',
+                  runtimeType: detection.runtimeType,
+                  message: `Detected ${detection.details}. No graphical web interface required.`,
+                });
+                sendEvent('ready', {
+                  stage: 'ready',
+                  status: 'connected' as AppStatus,
+                  port: 0,
+                  previewUrl: '',
+                  runtimeType: detection.runtimeType,
+                  hasWebInterface: false,
+                  projectTypeCategory: detection.projectTypeCategory,
+                  details: detection.details,
+                  entryPoint: detection.entryPoint,
+                  startCommand: detection.startCommand,
+                  buildCommand: detection.buildCommand,
+                  commandSources: detection.commandSources,
+                  detectedEnvVars: detection.detectedEnvVars,
+                  missingConfigReason: detection.missingConfigReason,
+                  servedDir: currentServeDir,
+                });
+                res.end();
+                return;
+              }
             }
 
             sendEvent('stage', {
