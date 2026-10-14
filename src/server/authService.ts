@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 
 export interface StoredUser {
   id: string;
@@ -58,6 +59,9 @@ let customDbPath: string | null = null;
 
 export function getDbPath(): string {
   if (customDbPath) return customDbPath;
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT) {
+    return path.join(os.tmpdir(), 'repomova_auth_db.json');
+  }
   const repomovaDir = path.resolve(process.cwd(), '.repomova');
   return path.join(repomovaDir, 'auth_db.json');
 }
@@ -68,20 +72,31 @@ export function setCustomDbPath(p: string | null): void {
 }
 
 export function loadAuthDb(): AuthDatabase {
-  if (inMemoryDb) return inMemoryDb;
+  if (inMemoryDb) {
+    if (!Array.isArray(inMemoryDb.users)) inMemoryDb.users = [];
+    if (!Array.isArray(inMemoryDb.sessions)) inMemoryDb.sessions = [];
+    return inMemoryDb;
+  }
 
-  const filePath = getDbPath();
-  try {
-    if (fs.existsSync(filePath)) {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(content);
-      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.sessions)) {
-        inMemoryDb = parsed;
-        return inMemoryDb as AuthDatabase;
+  const primaryPath = getDbPath();
+  const fallbackPath = path.join(os.tmpdir(), 'repomova_auth_db.json');
+
+  for (const filePath of [primaryPath, fallbackPath]) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object') {
+          inMemoryDb = {
+            users: Array.isArray(parsed.users) ? parsed.users : [],
+            sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+          };
+          return inMemoryDb;
+        }
       }
+    } catch {
+      // try next path
     }
-  } catch (err) {
-    console.warn('[Repomova Auth] Error loading auth database from disk:', err);
   }
 
   inMemoryDb = { users: [], sessions: [] };
@@ -97,8 +112,13 @@ export function saveAuthDb(db: AuthDatabase): void {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(filePath, JSON.stringify(db, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('[Repomova Auth] Error saving auth database to disk:', err);
+  } catch {
+    try {
+      const fallbackPath = path.join(os.tmpdir(), 'repomova_auth_db.json');
+      fs.writeFileSync(fallbackPath, JSON.stringify(db, null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('[Repomova Auth] Error saving auth database to disk:', err);
+    }
   }
 }
 
@@ -142,6 +162,10 @@ export function toSafeUser(user: StoredUser): SafeUserProfile {
 }
 
 export function purgeExpiredSessions(db: AuthDatabase): void {
+  if (!Array.isArray(db.sessions)) {
+    db.sessions = [];
+    return;
+  }
   const now = new Date().toISOString();
   db.sessions = db.sessions.filter((s) => s.expiresAt > now);
 }

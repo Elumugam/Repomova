@@ -13,8 +13,6 @@ import {
   Sun,
   PanelLeftClose,
   PanelLeft,
-  LogIn,
-  UserPlus,
   LogOut,
   Shield,
 } from 'lucide-react';
@@ -41,7 +39,6 @@ export function Sidebar() {
     isAuthenticated,
     setUser,
     setSettingsTab,
-    setAuthMode,
   } = useWorkspaceStore();
 
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -352,29 +349,13 @@ export function Sidebar() {
                     role="menuitem"
                     onClick={() => {
                       setSettingsTab('account');
-                      setAuthMode('login');
                       setActiveView('settings');
                       setProfileMenuOpen(false);
                       setSidebarOpen(false);
                     }}
                   >
-                    <LogIn size={16} className="profile-menu-item-icon" />
-                    <span>Sign In</span>
-                  </button>
-
-                  <button
-                    className="profile-menu-item"
-                    role="menuitem"
-                    onClick={() => {
-                      setSettingsTab('account');
-                      setAuthMode('signup');
-                      setActiveView('settings');
-                      setProfileMenuOpen(false);
-                      setSidebarOpen(false);
-                    }}
-                  >
-                    <UserPlus size={16} className="profile-menu-item-icon" />
-                    <span>Sign Up</span>
+                    <Settings size={16} className="profile-menu-item-icon" />
+                    <span>Settings</span>
                   </button>
                 </>
               )}

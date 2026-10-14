@@ -8,13 +8,7 @@ import {
   Shield,
   LogOut,
   LogIn,
-  Mail,
-  Lock,
-  Eye,
-  EyeOff,
   Loader2,
-  Check,
-  AlertCircle,
   UserPlus,
 } from 'lucide-react';
 import { Github } from './GithubIcon';
@@ -81,124 +75,12 @@ export function SettingsView() {
 }
 
 function AccountSettings() {
-  const { user, isAuthenticated, setUser, authMode, setAuthMode } = useWorkspaceStore();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const { user, isAuthenticated, setUser, setActiveView } = useWorkspaceStore();
 
   // Editing profile state for signed-in users
   const [editName, setEditName] = useState(user?.displayName || '');
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
-
-  // Helper to map auth error messages to user-friendly text
-  function formatAuthError(err: any): string {
-    if (!err) return 'An unexpected error occurred.';
-    const msg = err.message || String(err);
-
-    if (msg.toLowerCase().includes('passwords do not match')) {
-      return 'Passwords do not match. Please re-enter your password.';
-    }
-    if (msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('already registered')) {
-      return 'An account with this email address already exists. Please sign in instead.';
-    }
-    if (
-      msg.toLowerCase().includes('invalid email or password') ||
-      msg.toLowerCase().includes('invalid login credentials') ||
-      msg.toLowerCase().includes('invalid credentials')
-    ) {
-      return 'Invalid email or password. Please verify your credentials and try again.';
-    }
-    if (msg.toLowerCase().includes('password must be at least') || msg.toLowerCase().includes('password should be at least')) {
-      return 'Password must be at least 6 characters long.';
-    }
-    if (msg.toLowerCase().includes('valid email')) {
-      return 'Please enter a valid email address.';
-    }
-    if (msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('network')) {
-      return 'Network connection failure. Please check your internet connection.';
-    }
-    return msg;
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    setSuccess('');
-
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      setError('Email address is required.');
-      return;
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(trimmedEmail)) {
-      setError('Please enter a valid email address.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters long.');
-      return;
-    }
-
-    if (authMode === 'signup') {
-      if (confirmPassword !== password) {
-        setError('Passwords do not match. Please re-enter your password.');
-        return;
-      }
-    }
-
-    setLoading(true);
-
-    try {
-      if (authMode === 'signup') {
-        const trimmedName = displayName.trim() || trimmedEmail.split('@')[0];
-        const res = await repomovaAuth.signUp({
-          email: trimmedEmail,
-          password,
-          confirmPassword,
-          displayName: trimmedName,
-        });
-
-        if (res.error) {
-          setError(formatAuthError(res.error));
-          return;
-        }
-
-        if (res.user) {
-          setUser(res.user);
-          setSuccess('Account created and signed in successfully!');
-        }
-      } else {
-        const res = await repomovaAuth.signIn({
-          email: trimmedEmail,
-          password,
-        });
-
-        if (res.error) {
-          setError(formatAuthError(res.error));
-          return;
-        }
-
-        if (res.user) {
-          setUser(res.user);
-          setSuccess('Signed in successfully!');
-        }
-      }
-    } catch (err: any) {
-      setError(formatAuthError(err));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   async function handleLogout() {
     try {
@@ -253,22 +135,6 @@ function AccountSettings() {
           Account Profile
         </h2>
 
-        {success && (
-          <div style={{
-            padding: 'var(--space-3)',
-            background: 'var(--color-success-bg)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--font-size-sm)',
-            color: 'var(--color-success)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-            marginBottom: 'var(--space-4)',
-          }}>
-            <Check size={14} />
-            <span>{success}</span>
-          </div>
-        )}
 
         {/* User Card */}
         <div style={{
@@ -362,169 +228,36 @@ function AccountSettings() {
       <h2 style={{
         fontSize: 'var(--font-size-md)',
         fontWeight: 'var(--font-weight-semibold)',
-        marginBottom: 'var(--space-1)',
+        marginBottom: 'var(--space-2)',
       }}>
-        {authMode === 'login' ? 'Sign In' : 'Create Account'}
+        Account Profile
       </h2>
-      <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-4)' }}>
-        {authMode === 'login'
-          ? 'Sign in to sync your connected applications and settings.'
-          : 'Create a new account to get started with Repomova.'}
+      <p style={{
+        fontSize: 'var(--font-size-sm)',
+        color: 'var(--color-text-secondary)',
+        marginBottom: 'var(--space-6)',
+      }}>
+        You are not signed in. Sign in or create an account to sync your connected applications and settings.
       </p>
 
-      <form noValidate onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', maxWidth: '380px' }}>
-        {authMode === 'signup' && (
-          <div>
-            <label className="input-label">Full Name or Nickname</label>
-            <div style={{ position: 'relative' }}>
-              <User size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-              <input
-                className="input-field"
-                type="text"
-                placeholder="Jane Doe"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                disabled={loading}
-                maxLength={60}
-                style={{ paddingLeft: '36px' }}
-              />
-            </div>
-          </div>
-        )}
-
-        <div>
-          <label className="input-label">Email</label>
-          <div style={{ position: 'relative' }}>
-            <Mail size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-            <input
-              className="input-field"
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              disabled={loading}
-              style={{ paddingLeft: '36px' }}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="input-label">Password</label>
-          <div style={{ position: 'relative' }}>
-            <Lock size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-            <input
-              className="input-field"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="•••••••• (min 6 characters)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              disabled={loading}
-              minLength={6}
-              style={{ paddingLeft: '36px', paddingRight: '40px' }}
-            />
-            <button
-              type="button"
-              className="btn btn-icon btn-ghost btn-sm"
-              style={{ position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)' }}
-              onClick={() => setShowPassword(!showPassword)}
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
-            >
-              {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-        </div>
-
-        {authMode === 'signup' && (
-          <div>
-            <label className="input-label">Confirm Password</label>
-            <div style={{ position: 'relative' }}>
-              <Lock size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
-              <input
-                className="input-field"
-                type={showConfirmPassword ? 'text' : 'password'}
-                placeholder="•••••••• (re-enter password)"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                disabled={loading}
-                minLength={6}
-                style={{ paddingLeft: '36px', paddingRight: '40px' }}
-              />
-              <button
-                type="button"
-                className="btn btn-icon btn-ghost btn-sm"
-                style={{ position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)' }}
-                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
-              >
-                {showConfirmPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div style={{
-            padding: 'var(--space-3)',
-            background: 'var(--color-error-bg)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--font-size-sm)',
-            color: 'var(--color-error)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-          }}>
-            <AlertCircle size={14} />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {success && (
-          <div style={{
-            padding: 'var(--space-3)',
-            background: 'var(--color-success-bg)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--font-size-sm)',
-            color: 'var(--color-success)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-          }}>
-            <Check size={14} />
-            <span>{success}</span>
-          </div>
-        )}
-
-        <button className="btn btn-primary" type="submit" disabled={loading}>
-          {loading ? (
-            <>
-              <Loader2 size={14} className="animate-spin" />
-              {authMode === 'login' ? 'Signing in...' : 'Creating account...'}
-            </>
-          ) : (
-            <>
-              {authMode === 'login' ? <LogIn size={14} /> : <UserPlus size={14} />}
-              {authMode === 'login' ? 'Sign In' : 'Create Account'}
-            </>
-          )}
-        </button>
-
+      <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
         <button
-          type="button"
-          className="btn btn-ghost"
-          style={{ fontSize: 'var(--font-size-sm)' }}
-          onClick={() => {
-            setAuthMode(authMode === 'login' ? 'signup' : 'login');
-            setError('');
-            setSuccess('');
-            setConfirmPassword('');
-          }}
+          className="btn btn-primary"
+          onClick={() => setActiveView('signin')}
+          style={{ gap: 'var(--space-2)' }}
         >
-          {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
+          <LogIn size={15} />
+          <span>Sign In</span>
         </button>
-      </form>
+        <button
+          className="btn btn-secondary"
+          onClick={() => setActiveView('signup')}
+          style={{ gap: 'var(--space-2)' }}
+        >
+          <UserPlus size={15} />
+          <span>Create Account</span>
+        </button>
+      </div>
     </div>
   );
 }

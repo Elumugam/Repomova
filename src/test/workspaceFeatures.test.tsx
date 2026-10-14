@@ -94,6 +94,53 @@ describe('Workspace Surgical Features & Improvements', () => {
       expect(apps[0].id).toBe(testApp.id);
       expect(apps[0].status).toBe('running');
     });
+
+    it('does not render "+" icon beside Repomova label when no tabs are open, and renders Sign In button for unauthenticated users', () => {
+      useWorkspaceStore.setState({
+        connectedApps: [],
+        openTabs: [],
+        activeTabId: null,
+        isAuthenticated: false,
+        user: null,
+      });
+
+      const { unmount } = render(<Topbar />);
+
+      // Repomova label is visible
+      expect(screen.getByText('Repomova')).toBeInTheDocument();
+
+      // "+" button beside Repomova is NOT rendered
+      expect(screen.queryByRole('button', { name: /open new application window/i })).toBeNull();
+
+      // "Sign In" button is in Topbar and navigates to signin view
+      const signInBtn = screen.getByRole('button', { name: /^Sign In/i });
+      expect(signInBtn).toBeInTheDocument();
+      fireEvent.click(signInBtn);
+      expect(useWorkspaceStore.getState().activeView).toBe('signin');
+
+      // "Connect" option is visible and functional
+      const connectBtn = screen.getByRole('button', { name: /Connect/i });
+      expect(connectBtn).toBeInTheDocument();
+      fireEvent.click(connectBtn);
+      expect(useWorkspaceStore.getState().connectModalOpen).toBe(true);
+
+      unmount();
+
+      // Also when connectedApps has items but no tabs are open
+      useWorkspaceStore.setState({
+        connectedApps: [testApp],
+        openTabs: [],
+        activeTabId: null,
+        connectModalOpen: false,
+        isAuthenticated: false,
+        user: null,
+      });
+
+      render(<Topbar />);
+      expect(screen.getByText('Repomova')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /open new application window/i })).toBeNull();
+      expect(screen.getByRole('button', { name: /^Sign In/i })).toBeInTheDocument();
+    });
   });
 
   describe('Requirement 2: Fix Blank Screens for Repositories Without a Frontend', () => {

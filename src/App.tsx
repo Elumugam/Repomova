@@ -9,6 +9,8 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { ConnectedAppsView } from './components/ConnectedAppsView';
 import { ConnectModal } from './components/ConnectModal';
 import { SettingsView } from './components/SettingsView';
+import { SignInView } from './components/SignInView';
+import { SignUpView } from './components/SignUpView';
 import { AppPreview } from './components/AppPreview';
 import { NewWorkspaceView } from './components/NewWorkspaceView';
 import { isSupabaseConfigured, loadBookmarksFromSupabase } from './lib/supabase';
@@ -18,6 +20,7 @@ export default function App() {
   const {
     theme,
     activeView,
+    setActiveView,
     openTabs,
     activeTabId,
     connectedApps,
@@ -84,6 +87,40 @@ export default function App() {
     };
   }, [setUser, setBookmarkedAppIds]);
 
+  // Sync route and browser history for dedicated /signin and /signup pages
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path === '/signin') {
+        setActiveView('signin');
+      } else if (path === '/signup') {
+        setActiveView('signup');
+      } else if (activeView === 'signin' || activeView === 'signup') {
+        setActiveView('home');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeView, setActiveView]);
+
+  useEffect(() => {
+    if (activeView === 'signin') {
+      if (window.location.pathname !== '/signin') {
+        window.history.pushState(null, '', '/signin');
+      }
+    } else if (activeView === 'signup') {
+      if (window.location.pathname !== '/signup') {
+        window.history.pushState(null, '', '/signup');
+      }
+    } else if (
+      (activeView === 'home' || activeView === 'apps' || activeView === 'settings') &&
+      (window.location.pathname === '/signin' || window.location.pathname === '/signup')
+    ) {
+      window.history.pushState(null, '', '/');
+    }
+  }, [activeView]);
+
   return (
     <div className="app-layout">
       <Sidebar />
@@ -93,6 +130,8 @@ export default function App() {
         <div className="app-content">
           {activeView === 'home' && <WelcomeScreen />}
           {activeView === 'settings' && <SettingsView />}
+          {activeView === 'signin' && <SignInView />}
+          {activeView === 'signup' && <SignUpView />}
 
           <div
             className="workspace-container"

@@ -121,8 +121,8 @@ interface WorkspaceState {
   setConnectModalOpen: (open: boolean) => void;
 
   // ---- Active View ----
-  activeView: 'home' | 'apps' | 'settings' | 'app-detail';
-  setActiveView: (view: 'home' | 'apps' | 'settings' | 'app-detail') => void;
+  activeView: 'home' | 'apps' | 'settings' | 'app-detail' | 'signin' | 'signup';
+  setActiveView: (view: 'home' | 'apps' | 'settings' | 'app-detail' | 'signin' | 'signup') => void;
 
   // ---- Settings & Auth Mode ----
   settingsTab: 'account' | 'github' | 'appearance' | 'security';
@@ -384,7 +384,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setConnectModalOpen: (open) => set({ connectModalOpen: open }),
 
   // Active View
-  activeView: 'home',
+  activeView:
+    typeof window !== 'undefined' && window.location.pathname === '/signin'
+      ? 'signin'
+      : typeof window !== 'undefined' && window.location.pathname === '/signup'
+      ? 'signup'
+      : 'home',
   setActiveView: (view) => set({ activeView: view }),
 
   // Settings & Auth Mode

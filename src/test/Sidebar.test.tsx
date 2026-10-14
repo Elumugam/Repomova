@@ -91,15 +91,17 @@ describe('Sidebar Component', () => {
     fireEvent.click(appsBtn);
     expect(useWorkspaceStore.getState().activeView).toBe('apps');
 
-    // Profile menu opens and provides Sign In / Sign Up when signed out
+    // Profile menu opens and does not have Sign In / Sign Up, but Settings is accessible
     const profileBtn = screen.getByRole('button', { name: /^Profile/i });
     fireEvent.click(profileBtn);
 
-    const signInMenuItem = screen.getByRole('menuitem', { name: /^Sign In/i });
-    expect(signInMenuItem).toBeInTheDocument();
-    fireEvent.click(signInMenuItem);
+    expect(screen.queryByRole('menuitem', { name: /^Sign In/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^Sign Up/i })).not.toBeInTheDocument();
+
+    const settingsMenuItem = screen.getByRole('menuitem', { name: /^Settings/i });
+    expect(settingsMenuItem).toBeInTheDocument();
+    fireEvent.click(settingsMenuItem);
     expect(useWorkspaceStore.getState().activeView).toBe('settings');
-    expect(useWorkspaceStore.getState().authMode).toBe('login');
 
     // Click Home
     const homeBtn = screen.getByRole('button', { name: /^Home/i });

@@ -1,14 +1,16 @@
 /* ============================================================
-   Tests: Authentication Flow & Profile Menu
+   Tests: Authentication Flow, Dedicated Pages & Profile Menu
    ============================================================ */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { Sidebar } from '../components/Sidebar';
 import { SettingsView } from '../components/SettingsView';
+import { SignInView } from '../components/SignInView';
+import { SignUpView } from '../components/SignUpView';
 import { useWorkspaceStore } from '../store';
 import { repomovaAuth } from '../lib/auth';
 
-describe('Authentication Flow & Profile Menu', () => {
+describe('Authentication Flow, Dedicated Pages & Profile Menu', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.restoreAllMocks();
@@ -59,47 +61,36 @@ describe('Authentication Flow & Profile Menu', () => {
       expect(profileBtn).toHaveAttribute('title', 'Profile');
     });
 
-    it('displays Sign In and Sign Up options in the profile menu for unauthenticated users', () => {
+    it('does NOT display Sign In or Sign Up options in the bottom-left profile popover', () => {
       render(<Sidebar />);
       const profileBtn = screen.getByRole('button', { name: /Profile/i });
       fireEvent.click(profileBtn);
 
       const menu = screen.getByRole('menu', { name: /Profile and account menu/i });
       expect(menu).toBeInTheDocument();
-      expect(screen.getByRole('menuitem', { name: /^Sign In/i })).toBeInTheDocument();
-      expect(screen.getByRole('menuitem', { name: /^Sign Up/i })).toBeInTheDocument();
+
+      // TASK 4 requirement: Remove Sign In and Sign Up menu entries from the bottom-left profile/account popover
+      expect(screen.queryByRole('menuitem', { name: /^Sign In/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: /^Sign Up/i })).not.toBeInTheDocument();
 
       // Does NOT show authenticated options to signed-out users
       expect(screen.queryByRole('menuitem', { name: /^Security/i })).not.toBeInTheDocument();
       expect(screen.queryByRole('menuitem', { name: /^Sign Out/i })).not.toBeInTheDocument();
+
+      // Settings is available to keep navigation functional
+      expect(screen.getByRole('menuitem', { name: /^Settings/i })).toBeInTheDocument();
     });
 
-    it('selecting Sign In navigates to Settings account tab in login mode', () => {
+    it('selecting Settings from the profile menu navigates to Settings view', () => {
       render(<Sidebar />);
       const profileBtn = screen.getByRole('button', { name: /Profile/i });
       fireEvent.click(profileBtn);
 
-      const signInBtn = screen.getByRole('menuitem', { name: /^Sign In/i });
-      fireEvent.click(signInBtn);
+      const settingsBtn = screen.getByRole('menuitem', { name: /^Settings/i });
+      fireEvent.click(settingsBtn);
 
       expect(useWorkspaceStore.getState().activeView).toBe('settings');
       expect(useWorkspaceStore.getState().settingsTab).toBe('account');
-      expect(useWorkspaceStore.getState().authMode).toBe('login');
-      // Popover menu closes on selection
-      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-    });
-
-    it('selecting Sign Up navigates to Settings account tab in signup mode', () => {
-      render(<Sidebar />);
-      const profileBtn = screen.getByRole('button', { name: /Profile/i });
-      fireEvent.click(profileBtn);
-
-      const signUpBtn = screen.getByRole('menuitem', { name: /^Sign Up/i });
-      fireEvent.click(signUpBtn);
-
-      expect(useWorkspaceStore.getState().activeView).toBe('settings');
-      expect(useWorkspaceStore.getState().settingsTab).toBe('account');
-      expect(useWorkspaceStore.getState().authMode).toBe('signup');
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     });
 
@@ -214,244 +205,41 @@ describe('Authentication Flow & Profile Menu', () => {
   });
 
   /* ------------------------------------------------------------
-     3. Sign-In & Sign-Up Logic (SettingsView / AccountSettings)
+     3. SettingsView Account Tab (Authentication Removed)
      ------------------------------------------------------------ */
-  describe('Sign-In & Sign-Up Functionality', () => {
-    it('renders Sign In form with email and password inputs', () => {
-      useWorkspaceStore.setState({ authMode: 'login' });
+  describe('SettingsView Account Tab (Authentication Removed)', () => {
+    it('does NOT render embedded Sign In or Create Account forms in Account settings tab', () => {
       render(<SettingsView />);
 
-      expect(screen.getByRole('heading', { name: /Sign In/i })).toBeInTheDocument();
-      expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText(/••••••••/i)).toBeInTheDocument();
+      // Embedded form fields must NOT be in settings
+      expect(screen.queryByPlaceholderText(/re-enter password/i)).not.toBeInTheDocument();
+      expect(screen.queryByPlaceholderText(/min 6 characters/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Already have an account\? Sign in/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Don't have an account\? Sign up/i)).not.toBeInTheDocument();
+
+      // Displays clean status and navigation buttons to dedicated auth screens
+      expect(screen.getByText(/You are not signed in/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /^Sign In/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Create Account/i })).toBeInTheDocument();
     });
 
-    it('switches between Sign In and Sign Up modes', () => {
+    it('clicking Sign In navigates to the dedicated /signin page', () => {
       render(<SettingsView />);
-      expect(screen.getByRole('heading', { name: /Sign In/i })).toBeInTheDocument();
+      const signInBtn = screen.getByRole('button', { name: /^Sign In/i });
+      fireEvent.click(signInBtn);
 
-      // Click "Don't have an account? Sign up"
-      fireEvent.click(screen.getByText(/Don't have an account\? Sign up/i));
-      expect(useWorkspaceStore.getState().authMode).toBe('signup');
-      expect(screen.getByRole('heading', { name: /Create Account/i })).toBeInTheDocument();
-
-      // Switch back
-      fireEvent.click(screen.getByText(/Already have an account\? Sign in/i));
-      expect(useWorkspaceStore.getState().authMode).toBe('login');
-      expect(screen.getByRole('heading', { name: /Sign In/i })).toBeInTheDocument();
+      expect(useWorkspaceStore.getState().activeView).toBe('signin');
     });
 
-    it('validates password length of at least 6 characters', async () => {
+    it('clicking Create Account navigates to the dedicated /signup page', () => {
       render(<SettingsView />);
+      const createAccountBtn = screen.getByRole('button', { name: /^Create Account/i });
+      fireEvent.click(createAccountBtn);
 
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'user@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
-        target: { value: '123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/Password must be at least 6 characters long/i)).toBeInTheDocument();
-      });
+      expect(useWorkspaceStore.getState().activeView).toBe('signup');
     });
 
-    it('validates email format before submitting', async () => {
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'invalid-email-address' },
-      });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
-        target: { value: 'validPassword123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/Please enter a valid email address/i)).toBeInTheDocument();
-      });
-    });
-
-    it('signs in successfully and updates user store immediately', async () => {
-      const mockSession = {
-        user: {
-          id: 'user-real-999',
-          email: 'jane@example.com',
-          displayName: 'Jane Doe',
-          createdAt: '2026-03-01T00:00:00Z',
-        },
-        token: 'token-abc-123',
-      };
-
-      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
-        data: { user: mockSession.user, session: mockSession },
-        user: mockSession.user,
-        session: mockSession,
-        error: null,
-      });
-
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'jane@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
-        target: { value: 'validPassword123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
-
-      await waitFor(() => {
-        expect(useWorkspaceStore.getState().user).toEqual(
-          expect.objectContaining({
-            id: 'user-real-999',
-            email: 'jane@example.com',
-            displayName: 'Jane Doe',
-          })
-        );
-        expect(useWorkspaceStore.getState().isAuthenticated).toBe(true);
-      });
-    });
-
-    it('displays user-friendly error message on invalid credentials', async () => {
-      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
-        data: { user: null, session: null },
-        user: null,
-        session: null,
-        error: new Error('Invalid email or password. Please verify your credentials and try again.'),
-      });
-
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'wrong@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
-        target: { value: 'wrongPassword123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/Invalid email or password/i)).toBeInTheDocument();
-      });
-    });
-
-    it('validates password confirmation matching on registration', async () => {
-      useWorkspaceStore.setState({ authMode: 'signup' });
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
-        target: { value: 'Alex Tester' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'alex@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
-        target: { value: 'mypassword123' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
-        target: { value: 'mismatch456' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/Passwords do not match. Please re-enter your password/i)).toBeInTheDocument();
-      });
-    });
-
-    it('registers new user successfully with password confirmation and updates store', async () => {
-      useWorkspaceStore.setState({ authMode: 'signup' });
-
-      const mockRegisteredUser = {
-        id: 'new-user-123',
-        email: 'alex@example.com',
-        displayName: 'Alex Tester',
-        createdAt: '2026-03-01T00:00:00Z',
-      };
-
-      const signUpSpy = vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
-        data: {
-          user: mockRegisteredUser,
-          session: { user: mockRegisteredUser, token: 'token-reg-123' },
-        },
-        user: mockRegisteredUser,
-        session: { user: mockRegisteredUser, token: 'token-reg-123' },
-        error: null,
-        message: 'Account created and signed in successfully!',
-      });
-
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
-        target: { value: 'Alex Tester' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'alex@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
-        target: { value: 'securePass123' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
-        target: { value: 'securePass123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
-
-      await waitFor(() => {
-        expect(signUpSpy).toHaveBeenCalledWith({
-          email: 'alex@example.com',
-          password: 'securePass123',
-          confirmPassword: 'securePass123',
-          displayName: 'Alex Tester',
-        });
-        expect(useWorkspaceStore.getState().user).toEqual(
-          expect.objectContaining({
-            id: 'new-user-123',
-            email: 'alex@example.com',
-            displayName: 'Alex Tester',
-          })
-        );
-        expect(useWorkspaceStore.getState().isAuthenticated).toBe(true);
-        expect(screen.getByText(/Account created and signed in successfully!/i)).toBeInTheDocument();
-      });
-    });
-
-    it('detects duplicate user on sign-up and guides user to sign in', async () => {
-      useWorkspaceStore.setState({ authMode: 'signup' });
-
-      vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
-        data: { user: null, session: null },
-        user: null,
-        session: null,
-        error: new Error('An account with this email address already exists. Please sign in instead.'),
-      });
-
-      render(<SettingsView />);
-
-      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'existing@example.com' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
-        target: { value: 'securePass123' },
-      });
-      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
-        target: { value: 'securePass123' },
-      });
-
-      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/An account with this email address already exists. Please sign in instead/i)).toBeInTheDocument();
-      });
-    });
-
-    it('allows signed-in users to update their display name', async () => {
+    it('allows signed-in users to update their display name in Account settings', async () => {
       useWorkspaceStore.setState({
         user: {
           id: 'user-update-1',
@@ -494,6 +282,268 @@ describe('Authentication Flow & Profile Menu', () => {
         });
         expect(useWorkspaceStore.getState().user?.displayName).toBe('Updated Name');
         expect(screen.getByText(/Profile updated successfully!/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  /* ------------------------------------------------------------
+     4. Dedicated Sign-In Screen (SignInView)
+     ------------------------------------------------------------ */
+  describe('Dedicated Sign-In Screen (SignInView)', () => {
+    it('renders dedicated Sign In form with email, password show/hide, and link to sign up', () => {
+      render(<SignInView />);
+
+      expect(screen.getByRole('heading', { name: /Sign In/i })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('••••••••')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Sign In/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Show password/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Sign up/i })).toBeInTheDocument();
+    });
+
+    it('navigates to signup page when clicking Sign up link', () => {
+      render(<SignInView />);
+      fireEvent.click(screen.getByRole('button', { name: /Sign up/i }));
+      expect(useWorkspaceStore.getState().activeView).toBe('signup');
+    });
+
+    it('toggles password visibility with show/hide button', () => {
+      render(<SignInView />);
+      const passwordInput = screen.getByPlaceholderText('••••••••');
+      const toggleBtn = screen.getByRole('button', { name: /Show password/i });
+
+      expect(passwordInput).toHaveAttribute('type', 'password');
+      fireEvent.click(toggleBtn);
+      expect(passwordInput).toHaveAttribute('type', 'text');
+      fireEvent.click(screen.getByRole('button', { name: /Hide password/i }));
+      expect(passwordInput).toHaveAttribute('type', 'password');
+    });
+
+    it('validates email format before submitting', async () => {
+      render(<SignInView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'invalid-email-address' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('••••••••'), {
+        target: { value: 'validPassword123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Please enter a valid email address/i)).toBeInTheDocument();
+      });
+    });
+
+    it('validates password minimum length of 6 characters', async () => {
+      render(<SignInView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'user@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('••••••••'), {
+        target: { value: '123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Password must be at least 6 characters long/i)).toBeInTheDocument();
+      });
+    });
+
+    it('signs in successfully and updates store and navigates to home', async () => {
+      const mockSession = {
+        user: {
+          id: 'user-real-999',
+          email: 'jane@example.com',
+          displayName: 'Jane Doe',
+          createdAt: '2026-03-01T00:00:00Z',
+        },
+        token: 'token-abc-123',
+      };
+
+      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
+        data: { user: mockSession.user, session: mockSession },
+        user: mockSession.user,
+        session: mockSession,
+        error: null,
+      });
+
+      render(<SignInView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'jane@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('••••••••'), {
+        target: { value: 'validPassword123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+
+      await waitFor(() => {
+        expect(useWorkspaceStore.getState().user).toEqual(
+          expect.objectContaining({
+            id: 'user-real-999',
+            email: 'jane@example.com',
+            displayName: 'Jane Doe',
+          })
+        );
+        expect(useWorkspaceStore.getState().isAuthenticated).toBe(true);
+        expect(useWorkspaceStore.getState().activeView).toBe('apps');
+      });
+    });
+
+    it('displays user-friendly error message on invalid credentials', async () => {
+      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
+        data: { user: null, session: null },
+        user: null,
+        session: null,
+        error: new Error('Invalid email or password. Please verify your credentials and try again.'),
+      });
+
+      render(<SignInView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'wrong@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('••••••••'), {
+        target: { value: 'wrongPassword123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Invalid email or password/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  /* ------------------------------------------------------------
+     5. Dedicated Sign-Up Screen (SignUpView)
+     ------------------------------------------------------------ */
+  describe('Dedicated Sign-Up Screen (SignUpView)', () => {
+    it('renders dedicated Sign Up form with name, email, password, confirm password, and show/hide toggles', () => {
+      render(<SignUpView />);
+
+      expect(screen.getByRole('heading', { name: /Create Account/i })).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('Jane Doe')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('•••••••• (min 6 characters)')).toBeInTheDocument();
+      expect(screen.getByPlaceholderText('•••••••• (re-enter password)')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^Create Account/i })).toBeInTheDocument();
+      expect(screen.getByText(/Sign in/i)).toBeInTheDocument();
+    });
+
+    it('navigates to signin page when clicking Sign in link', () => {
+      render(<SignUpView />);
+      fireEvent.click(screen.getByText(/Sign in/i));
+      expect(useWorkspaceStore.getState().activeView).toBe('signin');
+    });
+
+    it('validates password confirmation matching on registration', async () => {
+      render(<SignUpView />);
+
+      fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
+        target: { value: 'Alex Tester' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'alex@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'mypassword123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
+        target: { value: 'mismatch456' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Passwords do not match\. Please re-enter your password/i)).toBeInTheDocument();
+      });
+    });
+
+    it('registers new user successfully with password confirmation and updates store', async () => {
+      const mockRegisteredUser = {
+        id: 'new-user-123',
+        email: 'alex@example.com',
+        displayName: 'Alex Tester',
+        createdAt: '2026-03-01T00:00:00Z',
+      };
+
+      const signUpSpy = vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
+        data: {
+          user: mockRegisteredUser,
+          session: { user: mockRegisteredUser, token: 'token-reg-123' },
+        },
+        user: mockRegisteredUser,
+        session: { user: mockRegisteredUser, token: 'token-reg-123' },
+        error: null,
+        message: 'Account created and signed in successfully!',
+      });
+
+      render(<SignUpView />);
+
+      fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
+        target: { value: 'Alex Tester' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'alex@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'securePass123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
+        target: { value: 'securePass123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
+
+      await waitFor(() => {
+        expect(signUpSpy).toHaveBeenCalledWith({
+          email: 'alex@example.com',
+          password: 'securePass123',
+          confirmPassword: 'securePass123',
+          displayName: 'Alex Tester',
+        });
+        expect(useWorkspaceStore.getState().user).toEqual(
+          expect.objectContaining({
+            id: 'new-user-123',
+            email: 'alex@example.com',
+            displayName: 'Alex Tester',
+          })
+        );
+        expect(useWorkspaceStore.getState().isAuthenticated).toBe(true);
+        expect(useWorkspaceStore.getState().activeView).toBe('apps');
+      });
+    });
+
+    it('detects duplicate user on sign-up and displays helpful error', async () => {
+      vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
+        data: { user: null, session: null },
+        user: null,
+        session: null,
+        error: new Error('An account with this email address already exists. Please sign in instead.'),
+      });
+
+      render(<SignUpView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'existing@example.com' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'securePass123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
+        target: { value: 'securePass123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/An account with this email address already exists\. Please sign in instead/i)).toBeInTheDocument();
       });
     });
   });
