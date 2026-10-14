@@ -38,14 +38,22 @@ export interface FrameworkDetectionResult {
   needsBuild?: boolean;
   noWebEntry?: boolean;
   hasWebInterface?: boolean;
-  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' | 'unknown';
   missingConfigReason?: string;
   entryPoint?: string;
+  defaultPort?: number;
   startCommand?: string;
   buildCommand?: string;
+  installCommand?: string;
+  testCommand?: string;
+  projectRoot?: string;
+  packageManager?: string;
+  isMonorepo?: boolean;
+  detectedServices?: string[];
   commandSources?: {
     startCommand?: string;
     buildCommand?: string;
+    installCommand?: string;
   };
   detectedEnvVars?: DetectedEnvVar[];
 }
@@ -221,8 +229,8 @@ export function parseEnvExample(dir: string): DetectedEnvVar[] {
   return [];
 }
 
-// Inspect and detect framework & entry points in cloned directory
-export function detectFramework(dir: string): FrameworkDetectionResult {
+// Inspect and detect framework & entry points in cloned directory (with monorepo support)
+export function detectFramework(dir: string, depth = 0): FrameworkDetectionResult {
   if (!fs.existsSync(dir)) {
     return { runtimeType: 'unknown', details: 'Directory does not exist', hasWebInterface: false };
   }
@@ -235,9 +243,91 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
   const hasPyFiles =
     fs.existsSync(path.join(dir, 'requirements.txt')) ||
     fs.existsSync(path.join(dir, 'pyproject.toml')) ||
+    fs.existsSync(path.join(dir, 'Pipfile')) ||
     fs.existsSync(path.join(dir, 'app.py')) ||
     fs.existsSync(path.join(dir, 'main.py')) ||
     fs.existsSync(path.join(dir, 'setup.py'));
+
+  // Check if Go repo indicators exist
+  const goModPath = path.join(dir, 'go.mod');
+  const mainGoPath = path.join(dir, 'main.go');
+  const cmdGoPath = path.join(dir, 'cmd');
+  const hasGoFiles = fs.existsSync(goModPath) || fs.existsSync(mainGoPath);
+
+  // Check if Rust repo indicators exist
+  const cargoPath = path.join(dir, 'Cargo.toml');
+  const hasRustFiles = fs.existsSync(cargoPath);
+
+  // Check if Java / JVM indicators exist
+  const pomPath = path.join(dir, 'pom.xml');
+  const gradlePath = path.join(dir, 'build.gradle');
+  const gradleKtsPath = path.join(dir, 'build.gradle.kts');
+  const hasJavaFiles = fs.existsSync(pomPath) || fs.existsSync(gradlePath) || fs.existsSync(gradleKtsPath);
+
+  // Check if Docker indicators exist
+  const hasDockerFiles =
+    fs.existsSync(path.join(dir, 'Dockerfile')) ||
+    fs.existsSync(path.join(dir, 'docker-compose.yml')) ||
+    fs.existsSync(path.join(dir, 'docker-compose.yaml')) ||
+    fs.existsSync(path.join(dir, 'compose.yaml')) ||
+    fs.existsSync(path.join(dir, 'compose.yml'));
+
+  // Check if monorepo / nested project check is needed
+  if (depth === 0 && !fs.existsSync(pkgJsonPath) && !hasPyFiles && !hasGoFiles && !hasRustFiles && !hasJavaFiles && !hasDockerFiles && (!entry || entry.relativeDir !== '.')) {
+    const candidateSubdirs = [
+      'frontend',
+      'client',
+      'web',
+      'ui',
+      'apps/web',
+      'apps/frontend',
+      'packages/web',
+      'backend',
+      'server',
+      'api',
+      'services',
+    ];
+
+    let foundFrontendSub: string | undefined;
+    let foundBackendSub: string | undefined;
+
+    for (const sub of candidateSubdirs) {
+      const fullSub = path.join(dir, sub);
+      if (fs.existsSync(fullSub) && fs.statSync(fullSub).isDirectory()) {
+        if (['frontend', 'client', 'web', 'ui', 'apps/web', 'apps/frontend', 'packages/web'].includes(sub)) {
+          if (!foundFrontendSub) foundFrontendSub = sub;
+        } else {
+          if (!foundBackendSub) foundBackendSub = sub;
+        }
+      }
+    }
+
+    // Full-stack monorepo with both frontend and backend subdirectories
+    if (foundFrontendSub && foundBackendSub) {
+      const feRes = detectFramework(path.join(dir, foundFrontendSub), depth + 1);
+      return {
+        ...feRes,
+        isMonorepo: true,
+        projectRoot: foundFrontendSub,
+        detectedServices: [foundFrontendSub, foundBackendSub],
+        details: `Full-stack monorepo (${foundFrontendSub} frontend & ${foundBackendSub} backend service)`,
+      };
+    }
+
+    // Single nested project
+    const singleSub = foundFrontendSub || foundBackendSub;
+    if (singleSub) {
+      const nestedRes = detectFramework(path.join(dir, singleSub), depth + 1);
+      if (nestedRes.runtimeType !== 'unknown') {
+        return {
+          ...nestedRes,
+          isMonorepo: true,
+          projectRoot: singleSub,
+          details: `${nestedRes.details} (nested in ./${singleSub})`,
+        };
+      }
+    }
+  }
 
   // 1. Check package.json projects
   if (fs.existsSync(pkgJsonPath)) {
@@ -249,13 +339,18 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       const hasDev = Boolean(scripts.dev);
       const hasStart = Boolean(scripts.start);
       const hasBuild = Boolean(scripts.build);
+      const hasTest = Boolean(scripts.test);
 
       let runtimeType: RuntimeType = 'node';
       let details = 'Node.js application';
       let hasWebInterface = true;
-      let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown' = 'frontend';
+      let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' | 'unknown' = 'frontend';
       let missingConfigReason: string | undefined;
       let entryPoint: string | undefined = pkg.main;
+
+      const isWorker =
+        Boolean(allDeps['bullmq'] || allDeps['bee-queue'] || allDeps['agenda'] || allDeps['amqplib'] || allDeps['kafkajs']) ||
+        Boolean(scripts['worker']);
 
       if (allDeps['next']) {
         runtimeType = 'nextjs';
@@ -287,6 +382,11 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
         details = 'React application';
         hasWebInterface = true;
         projectTypeCategory = 'frontend';
+      } else if (isWorker) {
+        runtimeType = 'worker';
+        details = 'Node.js Background Worker / Queue Processor';
+        hasWebInterface = false;
+        projectTypeCategory = 'worker';
       } else if (allDeps['express'] || allDeps['fastify'] || allDeps['koa'] || allDeps['@nestjs/core'] || allDeps['hapi']) {
         runtimeType = 'backend';
         details = 'Node.js Backend API / Service';
@@ -326,6 +426,7 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
 
       const buildCommand = hasBuild ? 'npm run build' : undefined;
       const buildSource = hasBuild ? "Detected from package.json 'scripts.build'" : undefined;
+      const testCommand = hasTest ? 'npm test' : undefined;
 
       const serveDir = entry ? entry.serveDir : dir;
       const needsBuild = hasBuild && !entry;
@@ -343,9 +444,13 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
         needsBuild,
         startCommand,
         buildCommand,
+        testCommand,
+        installCommand: 'npm install',
+        packageManager: 'npm',
         commandSources: {
           startCommand: startSource,
           buildCommand: buildSource,
+          installCommand: 'Standard Node.js package manager',
         },
         detectedEnvVars,
       };
@@ -357,6 +462,7 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
         serveDir: dir,
         hasWebInterface: false,
         projectTypeCategory: 'backend',
+        installCommand: 'npm install',
       };
     }
   }
@@ -383,6 +489,21 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       reqContent.includes('gradio') ||
       reqContent.includes('plotly');
 
+    const isWorker =
+      reqContent.includes('celery') ||
+      reqContent.includes('rq') ||
+      reqContent.includes('dramatiq') ||
+      fs.existsSync(path.join(dir, 'tasks.py')) ||
+      fs.existsSync(path.join(dir, 'worker.py'));
+
+    const isAiMl =
+      reqContent.includes('torch') ||
+      reqContent.includes('tensorflow') ||
+      reqContent.includes('scikit-learn') ||
+      reqContent.includes('transformers') ||
+      reqContent.includes('langchain') ||
+      reqContent.includes('pandas');
+
     const isBackendApi =
       reqContent.includes('fastapi') ||
       reqContent.includes('flask') ||
@@ -399,30 +520,44 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       (fs.existsSync(path.join(dir, 'setup.py')) || fs.existsSync(path.join(dir, 'pyproject.toml'))) &&
       !isDashOrStreamlit &&
       !isBackendApi &&
-      !isCli;
+      !isCli &&
+      !isWorker;
 
     const entryPy = fs.existsSync(path.join(dir, 'main.py')) ? 'python main.py' : 'python app.py';
 
     let runtimeType: RuntimeType = 'python';
     let details = 'Python application';
     let hasWebInterface = false;
-    let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' = 'backend';
+    let projectTypeCategory: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' = 'backend';
+    let startCmd = entryPy;
 
     if (isDashOrStreamlit || hasTemplates) {
       runtimeType = 'python';
       details = isDashOrStreamlit ? 'Plotly Dash / Streamlit Web Application' : 'Python Web Application';
       hasWebInterface = true;
       projectTypeCategory = 'frontend';
+    } else if (isWorker) {
+      runtimeType = 'worker';
+      details = 'Python Background Worker / Celery Queue Consumer';
+      hasWebInterface = false;
+      projectTypeCategory = 'worker';
+      startCmd = fs.existsSync(path.join(dir, 'worker.py')) ? 'python worker.py' : 'celery -A tasks worker --loglevel=info';
     } else if (isCli) {
       runtimeType = 'cli';
       details = 'Python Command-Line Tool (CLI)';
       hasWebInterface = false;
       projectTypeCategory = 'cli';
+      startCmd = fs.existsSync(path.join(dir, 'cli.py')) ? 'python cli.py' : entryPy;
     } else if (isLibrary) {
       runtimeType = 'library';
       details = 'Python Library / Package';
       hasWebInterface = false;
       projectTypeCategory = 'library';
+    } else if (isAiMl) {
+      runtimeType = 'python';
+      details = 'Python AI/ML & Data Processing Project';
+      hasWebInterface = false;
+      projectTypeCategory = 'backend';
     } else if (isBackendApi) {
       runtimeType = 'python';
       details = 'Python REST API / Backend Service';
@@ -435,17 +570,229 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
       details,
       hasWebInterface,
       projectTypeCategory,
-      entryPoint: fs.existsSync(path.join(dir, 'main.py')) ? 'main.py' : 'app.py',
+      entryPoint: fs.existsSync(path.join(dir, 'main.py')) ? 'main.py' : fs.existsSync(path.join(dir, 'app.py')) ? 'app.py' : undefined,
       serveDir: dir,
-      startCommand: entryPy,
+      startCommand: startCmd,
+      buildCommand: fs.existsSync(reqPath) ? 'pip install -r requirements.txt' : undefined,
+      installCommand: fs.existsSync(reqPath) ? 'pip install -r requirements.txt' : 'pip install .',
+      testCommand: 'pytest',
+      packageManager: 'pip',
       commandSources: {
         startCommand: 'Detected from Python repository structure',
+        installCommand: 'Standard Python pip package manager',
       },
       detectedEnvVars,
     };
   }
 
-  // 3. Static site detection: true web entry point found (root, dist, build, public, www, site)
+  // 3. Go language detection (go.mod / main.go)
+  if (hasGoFiles) {
+    let goContent = '';
+    if (fs.existsSync(goModPath)) {
+      try { goContent = fs.readFileSync(goModPath, 'utf8').toLowerCase(); } catch { /* ignore */ }
+    }
+
+    const hasMain = fs.existsSync(mainGoPath) || fs.existsSync(cmdGoPath);
+    const isGoWeb =
+      goContent.includes('gin-gonic/gin') ||
+      goContent.includes('labstack/echo') ||
+      goContent.includes('gofiber/fiber') ||
+      goContent.includes('gorilla/mux') ||
+      goContent.includes('chi') ||
+      goContent.includes('net/http');
+
+    const isGoCli =
+      goContent.includes('spf13/cobra') ||
+      goContent.includes('urfave/cli') ||
+      fs.existsSync(cmdGoPath);
+
+    let runtimeType: RuntimeType = 'go';
+    let details = 'Go application';
+    let projectTypeCategory: 'backend' | 'cli' | 'library' = 'backend';
+    let startCmd = 'go run .';
+    let buildCmd: string | undefined = 'go build -v .';
+
+    if (isGoWeb || (hasMain && !isGoCli)) {
+      details = 'Go Backend API / HTTP Service';
+      projectTypeCategory = 'backend';
+      runtimeType = 'go';
+      startCmd = fs.existsSync(mainGoPath) ? 'go run main.go' : 'go run .';
+      buildCmd = 'go build -v .';
+    } else if (isGoCli) {
+      details = 'Go Command-Line Tool (CLI)';
+      projectTypeCategory = 'cli';
+      runtimeType = 'cli';
+      startCmd = fs.existsSync(cmdGoPath) ? 'go run ./cmd/...' : 'go run .';
+      buildCmd = 'go build .';
+    } else {
+      details = 'Go Module / Library';
+      projectTypeCategory = 'library';
+      runtimeType = 'library';
+      startCmd = undefined as unknown as string;
+      buildCmd = 'go test ./...';
+    }
+
+    return {
+      runtimeType,
+      details,
+      hasWebInterface: false,
+      projectTypeCategory,
+      defaultPort: (isGoWeb || (hasMain && !isGoCli)) ? 8080 : undefined,
+      entryPoint: fs.existsSync(mainGoPath) ? 'main.go' : fs.existsSync(cmdGoPath) ? 'cmd/main.go' : undefined,
+      serveDir: dir,
+      startCommand: startCmd,
+      buildCommand: buildCmd,
+      installCommand: 'go mod download',
+      testCommand: 'go test ./...',
+      packageManager: 'go',
+      commandSources: {
+        startCommand: 'Detected from Go module definition',
+        installCommand: 'Go modules package manager',
+      },
+      detectedEnvVars,
+    };
+  }
+
+  // 4. Rust detection (Cargo.toml)
+  if (hasRustFiles) {
+    let cargoContent = '';
+    try { cargoContent = fs.readFileSync(cargoPath, 'utf8').toLowerCase(); } catch { /* ignore */ }
+
+    const isRustWasm =
+      cargoContent.includes('yew') ||
+      cargoContent.includes('leptos') ||
+      cargoContent.includes('trunk') ||
+      fs.existsSync(path.join(dir, 'Trunk.toml'));
+
+    const isRustWeb =
+      cargoContent.includes('actix-web') ||
+      cargoContent.includes('axum') ||
+      cargoContent.includes('rocket') ||
+      cargoContent.includes('warp') ||
+      cargoContent.includes('poem');
+
+    const isRustCli =
+      cargoContent.includes('clap') ||
+      cargoContent.includes('structopt') ||
+      cargoContent.includes('[[bin]]') ||
+      fs.existsSync(path.join(dir, 'src', 'main.rs'));
+
+    const isRustLib =
+      cargoContent.includes('[lib]') ||
+      (fs.existsSync(path.join(dir, 'src', 'lib.rs')) && !fs.existsSync(path.join(dir, 'src', 'main.rs')));
+
+    if (isRustWasm) {
+      return {
+        runtimeType: 'rust',
+        details: 'Rust WebAssembly Application (Trunk/WASM)',
+        hasWebInterface: true,
+        projectTypeCategory: 'frontend',
+        serveDir: dir,
+        startCommand: 'trunk serve',
+        buildCommand: 'trunk build --release',
+        testCommand: 'cargo test',
+        installCommand: 'cargo build',
+        packageManager: 'cargo',
+        detectedEnvVars,
+      };
+    }
+
+    if (isRustWeb) {
+      return {
+        runtimeType: 'rust',
+        details: 'Rust Web Service / REST API',
+        hasWebInterface: false,
+        projectTypeCategory: 'backend',
+        defaultPort: 8080,
+        serveDir: dir,
+        startCommand: 'cargo run',
+        buildCommand: 'cargo build --release',
+        testCommand: 'cargo test',
+        installCommand: 'cargo build',
+        packageManager: 'cargo',
+        detectedEnvVars,
+      };
+    }
+
+    if (isRustCli && !isRustLib) {
+      return {
+        runtimeType: 'cli',
+        details: 'Rust Command-Line Tool (CLI)',
+        hasWebInterface: false,
+        projectTypeCategory: 'cli',
+        entryPoint: 'src/main.rs',
+        serveDir: dir,
+        startCommand: 'cargo run --',
+        buildCommand: 'cargo build',
+        testCommand: 'cargo test',
+        installCommand: 'cargo build',
+        packageManager: 'cargo',
+        detectedEnvVars,
+      };
+    }
+
+    return {
+      runtimeType: 'library',
+      details: 'Rust Crate / Library',
+      hasWebInterface: false,
+      projectTypeCategory: 'library',
+      entryPoint: 'src/lib.rs',
+      serveDir: dir,
+      buildCommand: 'cargo test',
+      testCommand: 'cargo test',
+      installCommand: 'cargo build',
+      packageManager: 'cargo',
+      detectedEnvVars,
+    };
+  }
+
+  // 5. Java / JVM detection (pom.xml, build.gradle)
+  if (hasJavaFiles) {
+    let pomContent = '';
+    if (fs.existsSync(pomPath)) {
+      try { pomContent = fs.readFileSync(pomPath, 'utf8').toLowerCase(); } catch { /* ignore */ }
+    }
+    const hasMvnw = fs.existsSync(path.join(dir, 'mvnw')) || fs.existsSync(path.join(dir, 'mvnw.cmd'));
+    const mvn = hasMvnw ? './mvnw' : 'mvn';
+
+    const hasGradlew = fs.existsSync(path.join(dir, 'gradlew')) || fs.existsSync(path.join(dir, 'gradlew.bat'));
+    const grad = hasGradlew ? './gradlew' : 'gradle';
+
+    if (fs.existsSync(pomPath)) {
+      const isSpring = pomContent.includes('spring-boot') || pomContent.includes('quarkus') || pomContent.includes('micronaut');
+      return {
+        runtimeType: isSpring ? 'java' : 'library',
+        details: isSpring ? 'Java Spring Boot / Microservice Application' : 'Java Maven Library / Package',
+        hasWebInterface: false,
+        projectTypeCategory: isSpring ? 'backend' : 'library',
+        defaultPort: isSpring ? 8080 : undefined,
+        serveDir: dir,
+        startCommand: isSpring ? `${mvn} spring-boot:run` : undefined,
+        buildCommand: isSpring ? `${mvn} clean package` : `${mvn} test`,
+        testCommand: `${mvn} test`,
+        installCommand: `${mvn} dependency:resolve`,
+        packageManager: 'maven',
+        detectedEnvVars,
+      };
+    }
+
+    return {
+      runtimeType: 'java',
+      details: 'Java / Gradle Application',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
+      defaultPort: 8080,
+      serveDir: dir,
+      startCommand: `${grad} bootRun`,
+      buildCommand: `${grad} build`,
+      testCommand: `${grad} test`,
+      installCommand: `${grad} build --dry-run`,
+      packageManager: 'gradle',
+      detectedEnvVars,
+    };
+  }
+
+  // 6. Static site detection: true web entry point found (root, dist, build, public, www, site)
   if (entry) {
     const locDesc = entry.relativeDir === '.' ? 'root' : `${entry.relativeDir}/`;
     return {
@@ -465,24 +812,30 @@ export function detectFramework(dir: string): FrameworkDetectionResult {
     };
   }
 
-  // 4. Docker detection
-  if (fs.existsSync(path.join(dir, 'Dockerfile')) || fs.existsSync(path.join(dir, 'docker-compose.yml'))) {
-    const isCompose = fs.existsSync(path.join(dir, 'docker-compose.yml'));
+  // 7. Docker detection (compose.yaml, docker-compose.yml, Dockerfile)
+  if (hasDockerFiles) {
+    const isCompose =
+      fs.existsSync(path.join(dir, 'docker-compose.yml')) ||
+      fs.existsSync(path.join(dir, 'docker-compose.yaml')) ||
+      fs.existsSync(path.join(dir, 'compose.yaml')) ||
+      fs.existsSync(path.join(dir, 'compose.yml'));
+
     return {
       runtimeType: 'docker',
-      details: 'Docker containerized application',
+      details: isCompose ? 'Docker Compose Multi-Service Application' : 'Docker containerized application',
       hasWebInterface: true,
       projectTypeCategory: 'frontend',
       serveDir: dir,
       startCommand: isCompose ? 'docker compose up' : 'docker build & run',
+      buildCommand: isCompose ? 'docker compose build' : 'docker build .',
       commandSources: {
-        startCommand: `Detected from ${isCompose ? 'docker-compose.yml' : 'Dockerfile'}`,
+        startCommand: `Detected from ${isCompose ? 'Compose configuration' : 'Dockerfile'}`,
       },
       detectedEnvVars,
     };
   }
 
-  // 5. Native desktop / compiled application without web entry point
+  // 8. Native desktop / compiled application without web entry point
   if (
     fs.existsSync(path.join(dir, 'makefile')) ||
     fs.existsSync(path.join(dir, 'Makefile')) ||
@@ -1004,6 +1357,12 @@ export function runtimeGatewayPlugin(): Plugin {
                 entryPoint: detection.entryPoint,
                 startCommand: detection.startCommand,
                 buildCommand: detection.buildCommand,
+                installCommand: detection.installCommand,
+                testCommand: detection.testCommand,
+                projectRoot: detection.projectRoot,
+                packageManager: detection.packageManager,
+                isMonorepo: detection.isMonorepo,
+                detectedServices: detection.detectedServices,
                 commandSources: detection.commandSources,
                 detectedEnvVars: detection.detectedEnvVars,
                 noWebEntry: detection.noWebEntry,
@@ -1026,6 +1385,7 @@ export function runtimeGatewayPlugin(): Plugin {
           const repoName = parsedUrl.searchParams.get('repoName') || 'app';
           const preferredPortStr = parsedUrl.searchParams.get('port');
           const preferredPort = preferredPortStr ? parseInt(preferredPortStr, 10) : undefined;
+          const userProjectRoot = parsedUrl.searchParams.get('projectRoot') || '';
 
           res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -1037,7 +1397,8 @@ export function runtimeGatewayPlugin(): Plugin {
             res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           };
 
-          const repoDir = path.resolve(process.cwd(), '.repomova', 'repos', appId || repoName);
+          const rawRepoDir = path.resolve(process.cwd(), '.repomova', 'repos', appId || repoName);
+          const repoDir = userProjectRoot ? path.resolve(rawRepoDir, userProjectRoot) : rawRepoDir;
           let currentServeDir = repoDir;
           let currentCommand = 'Built-in Static Server';
 
@@ -1069,9 +1430,9 @@ export function runtimeGatewayPlugin(): Plugin {
             fs.mkdirSync(cacheDir, { recursive: true });
 
             sendEvent('stage', { stage: 'cloning', message: 'Performing shallow clone...' });
-            if (!fs.existsSync(repoDir)) {
-              fs.mkdirSync(path.dirname(repoDir), { recursive: true });
-              await execAsync(`git clone --depth 1 ${repoUrl} "${repoDir}"`);
+            if (!fs.existsSync(rawRepoDir)) {
+              fs.mkdirSync(path.dirname(rawRepoDir), { recursive: true });
+              await execAsync(`git clone --depth 1 ${repoUrl} "${rawRepoDir}"`);
             }
 
             // Independent parallel verification: allocate unique free port & verify git
@@ -1088,9 +1449,13 @@ export function runtimeGatewayPlugin(): Plugin {
             sendEvent('stage', { stage: 'detecting', message: 'Detecting framework & entry points...' });
             const detection = detectFramework(repoDir);
 
-            // Handle repositories without directly viewable graphical interfaces (Backend, CLI, Library)
+            // Handle repositories without directly viewable graphical interfaces (Backend, CLI, Library, Worker)
             if (!detection.hasWebInterface) {
-              if (detection.runtimeType === 'backend') {
+              const isBackendService =
+                detection.projectTypeCategory === 'backend' ||
+                ['backend', 'python', 'go', 'rust', 'java'].includes(detection.runtimeType);
+
+              if (isBackendService) {
                 sendEvent('stage', {
                   stage: 'resolving_runtime',
                   runtimeType: detection.runtimeType,
@@ -1110,6 +1475,12 @@ export function runtimeGatewayPlugin(): Plugin {
                   entryPoint: detection.entryPoint,
                   startCommand: detection.startCommand,
                   buildCommand: detection.buildCommand,
+                  installCommand: detection.installCommand,
+                  testCommand: detection.testCommand,
+                  projectRoot: detection.projectRoot || userProjectRoot || undefined,
+                  packageManager: detection.packageManager,
+                  isMonorepo: detection.isMonorepo,
+                  detectedServices: detection.detectedServices,
                   commandSources: detection.commandSources,
                   detectedEnvVars: detection.detectedEnvVars,
                   servedDir: currentServeDir,
@@ -1117,7 +1488,7 @@ export function runtimeGatewayPlugin(): Plugin {
                 res.end();
                 return;
               } else {
-                // CLI tools, Libraries, Unknown:
+                // CLI tools, Libraries, Workers, Unknown:
                 // Never display a false running status! Status remains connected.
                 sendEvent('stage', {
                   stage: 'resolving_runtime',
@@ -1136,6 +1507,12 @@ export function runtimeGatewayPlugin(): Plugin {
                   entryPoint: detection.entryPoint,
                   startCommand: detection.startCommand,
                   buildCommand: detection.buildCommand,
+                  installCommand: detection.installCommand,
+                  testCommand: detection.testCommand,
+                  projectRoot: detection.projectRoot || userProjectRoot || undefined,
+                  packageManager: detection.packageManager,
+                  isMonorepo: detection.isMonorepo,
+                  detectedServices: detection.detectedServices,
                   commandSources: detection.commandSources,
                   detectedEnvVars: detection.detectedEnvVars,
                   missingConfigReason: detection.missingConfigReason,
@@ -1329,6 +1706,51 @@ export function runtimeGatewayPlugin(): Plugin {
               command: currentCommand,
             });
             res.end();
+          }
+          return;
+        }
+
+        // CLI Execution & Script Runner endpoint
+        if (url.startsWith('/api/apps/cli/run') && req.method === 'POST') {
+          try {
+            const body = await readJsonBody();
+            const { appId, repoName, command = '', args = '', projectRoot = '' } = body;
+            const baseDir = path.resolve(process.cwd(), '.repomova', 'repos', appId || repoName);
+            const cwd = projectRoot ? path.resolve(baseDir, projectRoot) : baseDir;
+
+            if (!fs.existsSync(cwd)) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `Directory not found: ${cwd}`, exitCode: 1 }));
+              return;
+            }
+
+            const cleanCmd = String(command).trim();
+            const cleanArgs = String(args).trim();
+            const fullCmd = cleanArgs ? `${cleanCmd} ${cleanArgs}` : cleanCmd;
+
+            if (!cleanCmd) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Command cannot be empty', exitCode: 1 }));
+              return;
+            }
+
+            const startTime = Date.now();
+            exec(fullCmd, { cwd, timeout: 20000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+              const durationMs = Date.now() - startTime;
+              const exitCode = err ? ((err as any).code ?? 1) : 0;
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                command: fullCmd,
+                stdout: stdout || '',
+                stderr: stderr || (err ? err.message : ''),
+                exitCode: typeof exitCode === 'number' ? exitCode : 1,
+                durationMs,
+              }));
+            });
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: msg, exitCode: 1 }));
           }
           return;
         }

@@ -6,14 +6,21 @@ export interface LaunchResult {
   port: number;
   runtimeType: RuntimeType;
   hasWebInterface?: boolean;
-  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' | 'unknown';
   entryPoint?: string;
   details?: string;
   startCommand?: string;
   buildCommand?: string;
+  installCommand?: string;
+  testCommand?: string;
+  projectRoot?: string;
+  packageManager?: string;
+  isMonorepo?: boolean;
+  detectedServices?: string[];
   commandSources?: {
     startCommand?: string;
     buildCommand?: string;
+    installCommand?: string;
   };
   detectedEnvVars?: DetectedEnvVar[];
 }
@@ -22,13 +29,20 @@ export interface DetectionResult {
   runtimeType: RuntimeType;
   details?: string;
   hasWebInterface?: boolean;
-  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' | 'unknown';
   entryPoint?: string;
   startCommand?: string;
   buildCommand?: string;
+  installCommand?: string;
+  testCommand?: string;
+  projectRoot?: string;
+  packageManager?: string;
+  isMonorepo?: boolean;
+  detectedServices?: string[];
   commandSources?: {
     startCommand?: string;
     buildCommand?: string;
+    installCommand?: string;
   };
   detectedEnvVars?: DetectedEnvVar[];
 }
@@ -59,6 +73,12 @@ export async function detectRepositoryFramework(
           entryPoint: data.entryPoint,
           startCommand: data.startCommand,
           buildCommand: data.buildCommand,
+          installCommand: data.installCommand,
+          testCommand: data.testCommand,
+          projectRoot: data.projectRoot,
+          packageManager: data.packageManager,
+          isMonorepo: data.isMonorepo,
+          detectedServices: data.detectedServices,
           commandSources: data.commandSources,
           detectedEnvVars: data.detectedEnvVars,
         };
@@ -255,6 +275,53 @@ export async function detectRepositoryFramework(
     };
   }
 
+  if (lowerName.includes('worker') || lowerName.includes('celery') || lowerName.includes('queue')) {
+    return {
+      runtimeType: 'worker',
+      details: 'Background Worker / Queue Consumer',
+      hasWebInterface: false,
+      projectTypeCategory: 'worker',
+      startCommand: 'python worker.py',
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('golang') || lowerName.includes('go-') || lowerName.endsWith('-go')) {
+    return {
+      runtimeType: 'go',
+      details: 'Go application',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
+      startCommand: 'go run .',
+      buildCommand: 'go build .',
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('rust') || lowerName.includes('cargo')) {
+    return {
+      runtimeType: 'rust',
+      details: 'Rust application',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
+      startCommand: 'cargo run',
+      buildCommand: 'cargo build',
+      detectedEnvVars: [],
+    };
+  }
+
+  if (lowerName.includes('java') || lowerName.includes('spring') || lowerName.includes('maven') || lowerName.includes('gradle')) {
+    return {
+      runtimeType: 'java',
+      details: 'Java application',
+      hasWebInterface: false,
+      projectTypeCategory: 'backend',
+      startCommand: './mvnw spring-boot:run',
+      buildCommand: './mvnw clean package',
+      detectedEnvVars: [],
+    };
+  }
+
   return {
     runtimeType: 'unknown',
     details: 'Unrecognized runtime structure',
@@ -328,8 +395,8 @@ export function launchAppWithEvents(
 
         const port = app.port || 3000;
 
-        // Non-web projects (CLI, backend, library) have no web interface
-        if (app.hasWebInterface === false && app.runtimeType !== 'backend') {
+        // Non-web projects (CLI, library, worker) have no web interface
+        if (app.hasWebInterface === false && app.runtimeType !== 'backend' && app.projectTypeCategory !== 'backend') {
           resolve({
             previewUrl: '',
             port: 0,
@@ -338,6 +405,34 @@ export function launchAppWithEvents(
             projectTypeCategory: app.projectTypeCategory || 'unknown',
             startCommand: app.startCommand,
             buildCommand: app.buildCommand,
+            installCommand: app.installCommand,
+            testCommand: app.testCommand,
+            projectRoot: app.projectRoot,
+            packageManager: app.packageManager,
+            isMonorepo: app.isMonorepo,
+            detectedServices: app.detectedServices,
+            commandSources: app.commandSources,
+            detectedEnvVars: app.detectedEnvVars,
+          });
+          return;
+        }
+
+        // Backend services in fallback environment
+        if (app.runtimeType === 'backend' || app.projectTypeCategory === 'backend' || ['go', 'rust', 'java'].includes(app.runtimeType)) {
+          resolve({
+            previewUrl: app.previewUrl || `http://127.0.0.1:${port}`,
+            port,
+            runtimeType: app.runtimeType || 'backend',
+            hasWebInterface: false,
+            projectTypeCategory: 'backend',
+            startCommand: app.startCommand,
+            buildCommand: app.buildCommand,
+            installCommand: app.installCommand,
+            testCommand: app.testCommand,
+            projectRoot: app.projectRoot,
+            packageManager: app.packageManager,
+            isMonorepo: app.isMonorepo,
+            detectedServices: app.detectedServices,
             commandSources: app.commandSources,
             detectedEnvVars: app.detectedEnvVars,
           });
@@ -404,7 +499,8 @@ export function launchAppWithEvents(
 
     try {
       const portQuery = app.port ? `&port=${app.port}` : '';
-      const eventUrl = `/api/apps/launch/events?appId=${encodeURIComponent(app.id)}&repoUrl=${encodeURIComponent(app.repoUrl)}&repoName=${encodeURIComponent(app.repoName)}${portQuery}`;
+      const rootQuery = app.projectRoot ? `&projectRoot=${encodeURIComponent(app.projectRoot)}` : '';
+      const eventUrl = `/api/apps/launch/events?appId=${encodeURIComponent(app.id)}&repoUrl=${encodeURIComponent(app.repoUrl)}&repoName=${encodeURIComponent(app.repoName)}${portQuery}${rootQuery}`;
       eventSource = new EventSource(eventUrl);
 
       // Stage updates received over SSE
@@ -434,6 +530,12 @@ export function launchAppWithEvents(
             details: data.details,
             startCommand: data.startCommand,
             buildCommand: data.buildCommand,
+            installCommand: data.installCommand,
+            testCommand: data.testCommand,
+            projectRoot: data.projectRoot,
+            packageManager: data.packageManager,
+            isMonorepo: data.isMonorepo,
+            detectedServices: data.detectedServices,
             commandSources: data.commandSources,
             detectedEnvVars: data.detectedEnvVars,
           });
@@ -498,4 +600,54 @@ export async function stopRunningApp(appId: string): Promise<boolean> {
     // ignore
   }
   return true;
+}
+
+export interface CliExecutionResult {
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Runs a CLI tool command or script within the isolated repository directory
+ */
+export async function runCliCommand(
+  appId: string,
+  repoName: string,
+  command: string,
+  args = '',
+  projectRoot = ''
+): Promise<CliExecutionResult> {
+  try {
+    const res = await fetch('/api/apps/cli/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appId, repoName, command, args, projectRoot }),
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+    const errData = await res.json().catch(() => ({}));
+    return {
+      command: `${command} ${args}`.trim(),
+      stdout: '',
+      stderr: errData.error || 'Failed to execute CLI command',
+      exitCode: 1,
+      durationMs: 0,
+      error: errData.error,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      command: `${command} ${args}`.trim(),
+      stdout: '',
+      stderr: `Execution error: ${msg}`,
+      exitCode: 1,
+      durationMs: 0,
+      error: msg,
+    };
+  }
 }

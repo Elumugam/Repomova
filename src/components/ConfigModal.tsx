@@ -37,6 +37,8 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
 
   // Form states
   const [runtimeType, setRuntimeType] = useState<RuntimeType>(app.runtimeType || 'static');
+  const [projectRoot, setProjectRoot] = useState<string>(app.projectRoot || '');
+  const [installCommand, setInstallCommand] = useState<string>(app.installCommand || '');
   const [startCommand, setStartCommand] = useState<string>(
     app.startCommand || (app.runtimeType === 'static' ? 'Built-in Static Server' : 'npm run dev')
   );
@@ -68,7 +70,12 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
 
   const isStatic = runtimeType === 'static';
   const isCliOrLib = runtimeType === 'cli' || runtimeType === 'library';
-  const isBackend = runtimeType === 'backend' || runtimeType === 'python';
+  const isBackend =
+    runtimeType === 'backend' ||
+    runtimeType === 'python' ||
+    runtimeType === 'go' ||
+    runtimeType === 'rust' ||
+    runtimeType === 'java';
 
   function toggleSecretVisibility(key: string) {
     setRevealedSecrets((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -106,6 +113,39 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
     if (nextType === 'static') {
       setStartCommand('Built-in Static Server');
       setBuildCommand('None (Static files)');
+      setInstallCommand('');
+    } else if (nextType === 'go') {
+      setStartCommand('go run .');
+      setBuildCommand('go build .');
+      setInstallCommand('go mod download');
+    } else if (nextType === 'rust') {
+      setStartCommand('cargo run');
+      setBuildCommand('cargo build');
+      setInstallCommand('cargo build');
+    } else if (nextType === 'java') {
+      setStartCommand('./mvnw spring-boot:run');
+      setBuildCommand('./mvnw clean package');
+      setInstallCommand('');
+    } else if (nextType === 'python') {
+      setStartCommand('python app.py');
+      setBuildCommand('');
+      setInstallCommand('pip install -r requirements.txt');
+    } else if (nextType === 'docker') {
+      setStartCommand('docker compose up');
+      setBuildCommand('docker compose build');
+      setInstallCommand('');
+    } else if (nextType === 'worker') {
+      setStartCommand('python worker.py');
+      setBuildCommand('');
+      setInstallCommand('');
+    } else if (nextType === 'cli') {
+      setStartCommand('node bin/cli.js');
+      setBuildCommand('');
+      setInstallCommand('');
+    } else if (nextType === 'library') {
+      setStartCommand('');
+      setBuildCommand('npm test');
+      setInstallCommand('npm install');
     } else if (startCommand === 'Built-in Static Server') {
       setStartCommand('npm run dev');
       setBuildCommand('');
@@ -133,8 +173,14 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
       }
     }
 
-    // Validate start command for applications that require a process
-    if (!isStatic && !isCliOrLib && !startCommand.trim()) {
+    // Validate start command only for applications that require an active server process
+    const requiresStartCommand =
+      !isStatic &&
+      !isCliOrLib &&
+      runtimeType !== 'worker' &&
+      runtimeType !== 'unknown';
+
+    if (requiresStartCommand && !startCommand.trim()) {
       errors.startCommand = 'Start command is required for application execution.';
     }
 
@@ -163,6 +209,8 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
     updateApp(app.id, {
       port: finalPort,
       runtimeType,
+      projectRoot: projectRoot.trim() || undefined,
+      installCommand: installCommand.trim() || undefined,
       startCommand: isStatic ? undefined : (startCommand.trim() || undefined),
       buildCommand: isStatic ? undefined : (buildCommand.trim() || undefined),
       envVars: finalEnvs,
@@ -415,6 +463,64 @@ export function ConfigModal({ app, isOpen, onClose, onResumeLaunch }: ConfigModa
               </select>
               <div className="input-hint">
                 Determines how Repomova installs dependencies, runs build pipelines, and serves the application.
+              </div>
+            </div>
+
+            {/* Project Root / Monorepo Directory */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-1)' }}>
+                <label
+                  htmlFor="project-root-input"
+                  className="input-label"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0 }}
+                >
+                  <FileCode size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+                  Project Root / Subdirectory
+                </label>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>
+                  {app.projectRoot ? `Detected: ${app.projectRoot}` : 'Optional (Monorepos)'}
+                </span>
+              </div>
+              <input
+                id="project-root-input"
+                type="text"
+                className="input-field"
+                placeholder="e.g. frontend, packages/web, or client (leave blank for repo root)"
+                value={projectRoot}
+                onChange={(e) => setProjectRoot(e.target.value)}
+                style={{ height: '38px', fontFamily: 'monospace', fontSize: '13px' }}
+              />
+              <div className="input-hint">
+                Specify subfolder if the runnable application or service resides in a nested monorepo directory.
+              </div>
+            </div>
+
+            {/* Dependency Install Command */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-1)' }}>
+                <label
+                  htmlFor="install-cmd-input"
+                  className="input-label"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0 }}
+                >
+                  <Terminal size={14} style={{ color: 'var(--color-text-tertiary)' }} />
+                  Dependency Install Command
+                </label>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>
+                  Optional
+                </span>
+              </div>
+              <input
+                id="install-cmd-input"
+                type="text"
+                className="input-field"
+                placeholder={runtimeType === 'python' ? 'e.g. pip install -r requirements.txt' : runtimeType === 'go' ? 'e.g. go mod download' : 'e.g. npm install'}
+                value={installCommand}
+                onChange={(e) => setInstallCommand(e.target.value)}
+                style={{ height: '38px', fontFamily: 'monospace', fontSize: '13px' }}
+              />
+              <div className="input-hint">
+                Command executed to install package dependencies before building or running.
               </div>
             </div>
 

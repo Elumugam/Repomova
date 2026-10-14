@@ -56,6 +56,10 @@ export type RuntimeType =
   | 'cli'
   | 'library'
   | 'docker'
+  | 'go'
+  | 'rust'
+  | 'java'
+  | 'worker'
   | 'unknown';
 
 export const RUNTIME_LABELS: Record<RuntimeType, string> = {
@@ -72,6 +76,10 @@ export const RUNTIME_LABELS: Record<RuntimeType, string> = {
   cli: 'CLI Tool',
   library: 'Library / Package',
   docker: 'Docker',
+  go: 'Go',
+  rust: 'Rust',
+  java: 'Java',
+  worker: 'Background Worker',
   unknown: 'Unknown',
 };
 
@@ -107,11 +115,18 @@ export interface ConnectedApp {
   isPrivate?: boolean;
   port?: number;
   previewUrl?: string;
+  projectRoot?: string;
+  installCommand?: string;
   buildCommand?: string;
   startCommand?: string;
+  testCommand?: string;
+  packageManager?: string;
+  isMonorepo?: boolean;
+  detectedServices?: string[];
   commandSources?: {
     startCommand?: string;
     buildCommand?: string;
+    installCommand?: string;
   };
   detectionDetails?: string;
   detectedEnvVars?: DetectedEnvVar[];
@@ -119,7 +134,7 @@ export interface ConnectedApp {
   lockfileHash?: string;
   hasWebInterface?: boolean;
   entryPoint?: string;
-  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'unknown';
+  projectTypeCategory?: 'frontend' | 'backend' | 'cli' | 'library' | 'worker' | 'unknown';
   lastError?: string;
   isBookmarked?: boolean;
 }

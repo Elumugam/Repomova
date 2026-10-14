@@ -25,6 +25,7 @@ import {
   Bookmark,
   Maximize2,
   Minimize2,
+  Send,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
 import {
@@ -40,6 +41,7 @@ import {
   stopRunningApp,
   detectRepositoryFramework,
   checkPortAvailability,
+  runCliCommand,
 } from '../lib/launchService';
 import { ConfigModal } from './ConfigModal';
 
@@ -142,7 +144,8 @@ export function AppPreview({ app }: AppPreviewProps) {
     isFrontendRuntime(app.runtimeType) &&
     app.runtimeType !== 'backend' &&
     app.runtimeType !== 'cli' &&
-    app.runtimeType !== 'library';
+    app.runtimeType !== 'library' &&
+    app.runtimeType !== 'worker';
 
   return (
     <>
@@ -187,8 +190,8 @@ export function AppPreview({ app }: AppPreviewProps) {
 }
 
 /* ============================================================
-   Project Overview View — For non-frontend repositories
-   (Backend APIs, CLI Tools, Libraries, Unconfigured projects)
+   Project Overview View — Dedicated Interfaces for Non-Frontend Repositories
+   (Backend APIs, CLI Tools, Libraries, Workers, Multi-Service Docker)
    ============================================================ */
 function ProjectOverviewView({
   app,
@@ -201,54 +204,184 @@ function ProjectOverviewView({
 }) {
   const { updateAppStatus } = useWorkspaceStore();
   const [logsOpen, setLogsOpen] = useState(false);
-  const [healthStatus, setHealthStatus] = useState<{ checked: boolean; ok?: boolean; message?: string; latency?: number } | null>(null);
-  const [checkingHealth, setCheckingHealth] = useState(false);
 
-  const isBackend = app.runtimeType === 'backend';
-  const isCli = app.runtimeType === 'cli';
-  const isLibrary = app.runtimeType === 'library';
+  // Runtime category checks
+  const isBackend =
+    app.runtimeType === 'backend' ||
+    app.projectTypeCategory === 'backend' ||
+    ['go', 'rust', 'java'].includes(app.runtimeType) ||
+    ((app.runtimeType === 'node' || app.runtimeType === 'python') && !app.hasWebInterface);
 
-  const previewPort = app.port || 3000;
-  const healthEndpointUrl = app.previewUrl || `http://127.0.0.1:${previewPort}/`;
+  const isCli = app.runtimeType === 'cli' || app.projectTypeCategory === 'cli';
+  const isLibrary = app.runtimeType === 'library' || app.projectTypeCategory === 'library';
+  const isWorker = app.runtimeType === 'worker' || app.projectTypeCategory === 'worker';
+  const isDocker = app.runtimeType === 'docker';
 
-  async function handleCheckHealth() {
-    setCheckingHealth(true);
+
+  // --- Backend API Testing State ---
+  const [apiMethod, setApiMethod] = useState<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'>('GET');
+  const [apiPath, setApiPath] = useState<string>('/');
+  const [apiBody, setApiBody] = useState<string>('');
+  const [showBodyEditor, setShowBodyEditor] = useState<boolean>(false);
+  const [apiLoading, setApiLoading] = useState<boolean>(false);
+  const [apiResponse, setApiResponse] = useState<{
+    status?: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    latency?: number;
+    error?: string;
+  } | null>(null);
+
+  // --- CLI Execution Console State ---
+  const [cliCommand, setCliCommand] = useState<string>(
+    app.startCommand || (isCli ? (app.language === 'Python' ? 'python main.py' : 'node bin/cli.js') : 'npm test')
+  );
+  const [cliArgs, setCliArgs] = useState<string>('');
+  const [cliRunning, setCliRunning] = useState<boolean>(false);
+  const [cliLogs, setCliLogs] = useState<string[]>([]);
+  const [cliLastExit, setCliLastExit] = useState<{ code: number; duration: number } | null>(null);
+
+  // --- Test & Build runner state for Libraries ---
+  const [testRunning, setTestRunning] = useState<boolean>(false);
+  const [testOutput, setTestOutput] = useState<string | null>(null);
+
+  // Send request via local port or proxy
+  async function handleSendApiRequest() {
+    setApiLoading(true);
+    setApiResponse(null);
     const start = performance.now();
+
+    // Clean path ensuring leading slash
+    const cleanPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+    const targetUrl = app.port ? `http://127.0.0.1:${app.port}${cleanPath}` : `/preview/${app.id}${cleanPath}`;
+
     try {
-      const res = await fetch(healthEndpointUrl, { method: 'GET', headers: { Accept: 'application/json, text/plain, */*' } });
-      const duration = Math.round(performance.now() - start);
-      setHealthStatus({
-        checked: true,
-        ok: res.status < 400,
-        message: `HTTP ${res.status} ${res.statusText || 'OK'} (${res.headers.get('content-type') || 'response'})`,
-        latency: duration,
+      const options: RequestInit = {
+        method: apiMethod,
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          ...(apiBody && ['POST', 'PUT', 'PATCH'].includes(apiMethod) ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(apiBody && ['POST', 'PUT', 'PATCH'].includes(apiMethod) ? { body: apiBody } : {}),
+      };
+
+      const res = await fetch(targetUrl, options);
+      const latency = Math.round(performance.now() - start);
+      const rawText = await res.text();
+
+      // Format JSON response if possible
+      let formattedBody = rawText;
+      try {
+        const parsed = JSON.parse(rawText);
+        formattedBody = JSON.stringify(parsed, null, 2);
+      } catch {
+        // Keep raw text
+      }
+
+      const headersObj: Record<string, string> = {};
+      res.headers.forEach((v, k) => {
+        headersObj[k] = v;
+      });
+
+      setApiResponse({
+        status: res.status,
+        statusText: res.statusText || 'OK',
+        headers: headersObj,
+        body: formattedBody,
+        latency,
       });
     } catch (err: unknown) {
-      const duration = Math.round(performance.now() - start);
-      const msg = err instanceof Error ? err.message : 'Connection refused';
-      setHealthStatus({
-        checked: true,
-        ok: false,
-        message: `Health check error: ${msg}`,
-        latency: duration,
+      const latency = Math.round(performance.now() - start);
+      const msg = err instanceof Error ? err.message : 'Connection failed';
+      setApiResponse({
+        error: `Request failed: ${msg}. If local port is blocked by browser CORS, please verify the service is running.`,
+        latency,
       });
     } finally {
-      setCheckingHealth(false);
+      setApiLoading(false);
     }
+  }
+
+  // Execute CLI Command
+  async function handleRunCli(customArgs?: string) {
+    const finalArgs = customArgs !== undefined ? customArgs : cliArgs;
+    setCliRunning(true);
+    const cmdLine = finalArgs ? `${cliCommand} ${finalArgs}` : cliCommand;
+    setCliLogs((prev) => [...prev, `$ ${cmdLine}`]);
+
+    const res = await runCliCommand(app.id, app.repoName, cliCommand, finalArgs, app.projectRoot);
+    setCliRunning(false);
+    setCliLastExit({ code: res.exitCode, duration: res.durationMs });
+
+    if (res.stdout) {
+      setCliLogs((prev) => [...prev, res.stdout]);
+    }
+    if (res.stderr) {
+      setCliLogs((prev) => [...prev, `[stderr] ${res.stderr}`]);
+    }
+    setCliLogs((prev) => [...prev, `[Process completed with exit code ${res.exitCode} in ${res.durationMs}ms]`]);
+  }
+
+  // Run Library Test Suite
+  async function handleRunLibraryTests() {
+    setTestRunning(true);
+    setTestOutput(null);
+    const testCmd = app.testCommand || (app.runtimeType === 'python' ? 'pytest' : app.runtimeType === 'rust' ? 'cargo test' : app.runtimeType === 'go' ? 'go test ./...' : 'npm test');
+    const res = await runCliCommand(app.id, app.repoName, testCmd, '', app.projectRoot);
+    setTestRunning(false);
+    setTestOutput(
+      `$ ${testCmd}\n` + (res.stdout || '') + (res.stderr ? `\n${res.stderr}` : '') + `\n\n[Exit Code: ${res.exitCode} (${res.durationMs}ms)]`
+    );
+  }
+
+  // Generate copyable cURL command
+  function getCurlCommand(): string {
+    const cleanPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+    const base = app.port ? `http://127.0.0.1:${app.port}` : (app.previewUrl || 'http://127.0.0.1:3000');
+    let cmd = `curl -X ${apiMethod} "${base}${cleanPath}"`;
+    if (apiBody && ['POST', 'PUT', 'PATCH'].includes(apiMethod)) {
+      cmd += ` -H "Content-Type: application/json" -d '${apiBody.replace(/'/g, "\\'")}'`;
+    }
+    return cmd;
+  }
+
+  // Installation snippet for libraries
+  function getInstallSnippet(): string {
+    if (app.language === 'Python' || app.runtimeType === 'python') {
+      return `pip install ${app.repoName}`;
+    }
+    if (app.runtimeType === 'rust') {
+      return `cargo add ${app.repoName}`;
+    }
+    if (app.runtimeType === 'go') {
+      return `go get github.com/${app.repoFullName}`;
+    }
+    return `npm install ${app.repoName}`;
   }
 
   function getUnavailableExplanation(): string {
     if (isBackend) {
-      return 'This repository is a backend API or service. It runs as a network service or headless process and does not provide a directly viewable browser frontend in the workspace.';
+      return 'This repository is a backend API or service. It runs as a network service or headless process without a browser GUI. You can interact with endpoints directly via the API Explorer or cURL below.';
     }
     if (isCli) {
-      return 'This repository is a command-line interface (CLI) tool. It is executed directly in a terminal shell environment and does not provide an HTML browser user interface.';
+      return 'This repository is a command-line interface (CLI) tool. Run commands and test script arguments directly inside the interactive Execution Console below.';
     }
     if (isLibrary) {
-      return 'This repository is a software library or package designed to be imported as a dependency in other applications. It does not provide a standalone graphical user interface.';
+      return 'This repository is a reusable package or library without a standalone HTTP application. You can view module export details, run test suites, or copy installation commands below.';
     }
-    return 'This project does not include a supported frontend web entry point (index.html, React, Vite, Next.js, etc.). Additional build or runtime configuration may be required.';
+    if (isWorker) {
+      return 'This repository is a background worker or queue consumer. It processes jobs asynchronously without an HTTP browser interface. Monitor worker processes and infrastructure brokers below.';
+    }
+    if (isDocker) {
+      return 'This repository contains a containerized Docker configuration. Services run inside container network namespaces.';
+    }
+    return 'This project does not include a supported frontend web entry point (index.html, React, Vite, Next.js, etc.). Additional configuration can be adjusted in settings.';
   }
+
+  // Check worker broker dependencies
+  const brokerEnvKeys = ['REDIS_URL', 'DATABASE_URL', 'CELERY_BROKER_URL', 'RABBITMQ_URL', 'AMQP_URL', 'MONGO_URI', 'KAFKA_BROKERS'];
+  const hasBrokerConfig = brokerEnvKeys.some((k) => app.envVars && app.envVars[k]);
 
   return (
     <div className="preview-container" style={{ background: 'var(--color-bg-primary)', overflowY: 'auto' }}>
@@ -271,8 +404,13 @@ function ProjectOverviewView({
           <span className="badge" style={{ background: 'var(--color-bg-tertiary)', fontSize: '10px' }}>
             {RUNTIME_LABELS[app.runtimeType]}
           </span>
+          {app.isMonorepo && (
+            <span className="badge" style={{ background: 'var(--color-bg-tertiary)', fontSize: '10px', color: 'var(--color-primary)' }}>
+              Monorepo
+            </span>
+          )}
           {app.port && app.status === 'running' && (
-            <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>
+            <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', fontFamily: 'monospace' }}>
               :{app.port}
             </span>
           )}
@@ -302,18 +440,18 @@ function ProjectOverviewView({
 
       {/* Main Workspace Project Overview Content */}
       <div style={{
-        padding: 'var(--space-8) var(--space-6)',
-        maxWidth: '820px',
+        padding: 'var(--space-6) var(--space-6)',
+        maxWidth: '860px',
         margin: '0 auto',
         display: 'flex',
         flexDirection: 'column',
-        gap: 'var(--space-6)',
+        gap: 'var(--space-5)',
       }}>
         {/* Header Block */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-4)' }}>
           <div style={{
-            width: '56px',
-            height: '56px',
+            width: '52px',
+            height: '52px',
             borderRadius: 'var(--radius-lg)',
             background: 'var(--color-bg-secondary)',
             border: '1px solid var(--color-border)',
@@ -323,7 +461,7 @@ function ProjectOverviewView({
             color: 'var(--color-text-primary)',
             flexShrink: 0,
           }}>
-            {isBackend ? <Server size={28} /> : isCli ? <Terminal size={28} /> : isLibrary ? <Package size={28} /> : <FileCode size={28} />}
+            {isBackend ? <Server size={26} /> : isCli ? <Terminal size={26} /> : isLibrary ? <Package size={26} /> : isWorker ? <Activity size={26} /> : <FileCode size={26} />}
           </div>
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
@@ -345,13 +483,14 @@ function ProjectOverviewView({
             </div>
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)', marginTop: 'var(--space-1)' }}>
               {app.repoFullName} &bull; {app.defaultBranch}
+              {app.projectRoot && ` &bull; Root: ./${app.projectRoot}`}
             </div>
           </div>
         </div>
 
-        {/* Informational Card: Why Graphical Interface is Unavailable */}
+        {/* Informational Card */}
         <div style={{
-          padding: 'var(--space-4)',
+          padding: 'var(--space-3) var(--space-4)',
           borderRadius: 'var(--radius-md)',
           background: 'var(--color-bg-secondary)',
           border: '1px solid var(--color-border)',
@@ -359,18 +498,466 @@ function ProjectOverviewView({
           gap: 'var(--space-3)',
           alignItems: 'flex-start',
         }}>
-          <Info size={18} style={{ color: 'var(--color-text-secondary)', flexShrink: 0, marginTop: '2px' }} />
+          <Info size={17} style={{ color: 'var(--color-text-secondary)', flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-medium)', color: 'var(--color-text-primary)' }}>
+            <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-semibold)', color: 'var(--color-text-primary)' }}>
               Graphical Browser Interface Unavailable
             </div>
-            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', marginTop: '2px', lineHeight: 1.5 }}>
               {getUnavailableExplanation()}
             </div>
           </div>
         </div>
 
-        {/* Project Structure & Entry Points */}
+        {/* ====================================================
+            MODE A: BACKEND API TESTING & EXPLORER PANEL
+            ==================================================== */}
+        {isBackend && (
+          <div style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-4)',
+            background: 'var(--color-bg-elevated)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{
+                fontSize: 'var(--font-size-xs)',
+                fontWeight: 'var(--font-weight-semibold)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--color-text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}>
+                <Server size={13} />
+                API Explorer & Endpoint Tester
+              </div>
+              {app.port && (
+                <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', fontFamily: 'monospace' }}>
+                  Base: http://127.0.0.1:{app.port}
+                </span>
+              )}
+            </div>
+
+            {/* Request Bar */}
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <select
+                className="input-field"
+                style={{ width: '100px', height: '36px', fontWeight: 600, fontSize: '12px' }}
+                value={apiMethod}
+                onChange={(e) => setApiMethod(e.target.value as any)}
+              >
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+                <option value="PATCH">PATCH</option>
+              </select>
+
+              <input
+                type="text"
+                className="input-field"
+                style={{ flex: 1, height: '36px', fontFamily: 'monospace', fontSize: '13px' }}
+                placeholder="/api/health or /"
+                value={apiPath}
+                onChange={(e) => setApiPath(e.target.value)}
+              />
+
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ height: '36px', padding: '0 var(--space-4)' }}
+                onClick={handleSendApiRequest}
+                disabled={apiLoading}
+              >
+                {apiLoading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                Send
+              </button>
+            </div>
+
+            {/* Request Body Toggle for POST/PUT */}
+            {['POST', 'PUT', 'PATCH'].includes(apiMethod) && (
+              <div>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: '26px', fontSize: '11px', padding: '0 4px', marginBottom: '4px' }}
+                  onClick={() => setShowBodyEditor(!showBodyEditor)}
+                >
+                  {showBodyEditor ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  JSON Request Body
+                </button>
+                {showBodyEditor && (
+                  <textarea
+                    className="input-field"
+                    style={{ height: '80px', fontFamily: 'monospace', fontSize: '12px', resize: 'vertical' }}
+                    placeholder='{"key": "value"}'
+                    value={apiBody}
+                    onChange={(e) => setApiBody(e.target.value)}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Response Viewer */}
+            {apiResponse && (
+              <div style={{
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--color-bg-secondary)',
+                overflow: 'hidden',
+              }}>
+                <div style={{
+                  padding: 'var(--space-2) var(--space-3)',
+                  borderBottom: '1px solid var(--color-border)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '11px',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                    {apiResponse.status && (
+                      <span
+                        className="badge"
+                        style={{
+                          background: apiResponse.status < 400 ? 'var(--color-success-bg)' : 'var(--color-error-bg)',
+                          color: apiResponse.status < 400 ? 'var(--color-success)' : 'var(--color-error)',
+                          fontWeight: 700,
+                        }}
+                      >
+                        {apiResponse.status} {apiResponse.statusText}
+                      </span>
+                    )}
+                    {apiResponse.latency !== undefined && (
+                      <span style={{ color: 'var(--color-text-tertiary)', fontFamily: 'monospace' }}>
+                        {apiResponse.latency}ms
+                      </span>
+                    )}
+                  </div>
+                  {apiResponse.body && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ height: '20px', fontSize: '10px', padding: '0 4px' }}
+                      onClick={() => navigator.clipboard?.writeText(apiResponse.body || '')}
+                    >
+                      <Copy size={11} /> Copy Body
+                    </button>
+                  )}
+                </div>
+                {apiResponse.error ? (
+                  <div style={{ padding: 'var(--space-3)', fontSize: '12px', color: 'var(--color-error)' }}>
+                    {apiResponse.error}
+                  </div>
+                ) : (
+                  <pre style={{
+                    padding: 'var(--space-3)',
+                    margin: 0,
+                    fontFamily: 'monospace',
+                    fontSize: '12px',
+                    color: 'var(--color-text-primary)',
+                    maxHeight: '180px',
+                    overflowY: 'auto',
+                    whiteSpace: 'pre-wrap',
+                  }}>
+                    {apiResponse.body || '<Empty response body>'}
+                  </pre>
+                )}
+              </div>
+            )}
+
+            {/* Copy cURL Command Bar */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: 'var(--space-2) var(--space-3)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--color-bg-secondary)',
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              color: 'var(--color-text-secondary)',
+            }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 'var(--space-2)' }}>
+                {getCurlCommand()}
+              </span>
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ height: '22px', fontSize: '11px', padding: '0 6px', flexShrink: 0 }}
+                onClick={() => navigator.clipboard?.writeText(getCurlCommand())}
+              >
+                <Copy size={11} /> Copy cURL
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ====================================================
+            MODE B: CLI TOOL EXECUTION CONSOLE
+            ==================================================== */}
+        {isCli && (
+          <div style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-4)',
+            background: 'var(--color-bg-elevated)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{
+                fontSize: 'var(--font-size-xs)',
+                fontWeight: 'var(--font-weight-semibold)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--color-text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}>
+                <Terminal size={13} />
+                CLI Execution Console
+              </div>
+              {cliLastExit && (
+                <span
+                  className="badge"
+                  style={{
+                    background: cliLastExit.code === 0 ? 'var(--color-success-bg)' : 'var(--color-error-bg)',
+                    color: cliLastExit.code === 0 ? 'var(--color-success)' : 'var(--color-error)',
+                    fontSize: '11px',
+                  }}
+                >
+                  Exit {cliLastExit.code} &bull; {cliLastExit.duration}ms
+                </span>
+              )}
+            </div>
+
+            {/* Interactive Command Input */}
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <input
+                type="text"
+                className="input-field"
+                style={{ width: '180px', height: '36px', fontFamily: 'monospace', fontSize: '12px' }}
+                placeholder="Executable"
+                value={cliCommand}
+                onChange={(e) => setCliCommand(e.target.value)}
+              />
+              <input
+                type="text"
+                className="input-field"
+                style={{ flex: 1, height: '36px', fontFamily: 'monospace', fontSize: '13px' }}
+                placeholder="Arguments (e.g. --help, --version, run)"
+                value={cliArgs}
+                onChange={(e) => setCliArgs(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRunCli();
+                }}
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                style={{ height: '36px', padding: '0 var(--space-4)' }}
+                onClick={() => handleRunCli()}
+                disabled={cliRunning}
+              >
+                {cliRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                Run
+              </button>
+            </div>
+
+            {/* Quick Argument Suggestions */}
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '11px', color: 'var(--color-text-tertiary)' }}>Quick flags:</span>
+              {['--help', '--version', '-v', 'status'].map((arg) => (
+                <button
+                  key={arg}
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: '22px', fontSize: '11px', padding: '0 6px', fontFamily: 'monospace' }}
+                  onClick={() => {
+                    setCliArgs(arg);
+                    handleRunCli(arg);
+                  }}
+                >
+                  {arg}
+                </button>
+              ))}
+              {cliLogs.length > 0 && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: '22px', fontSize: '11px', marginLeft: 'auto' }}
+                  onClick={() => setCliLogs([])}
+                >
+                  Clear Terminal
+                </button>
+              )}
+            </div>
+
+            {/* Terminal Output Screen */}
+            <div style={{
+              borderRadius: 'var(--radius-sm)',
+              background: '#0d1117',
+              border: '1px solid var(--color-border)',
+              padding: 'var(--space-3)',
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              color: '#c9d1d9',
+              minHeight: '120px',
+              maxHeight: '220px',
+              overflowY: 'auto',
+            }}>
+              {cliLogs.length === 0 ? (
+                <span style={{ color: '#8b949e' }}>Ready to execute. Enter arguments above and click Run.</span>
+              ) : (
+                cliLogs.map((line, idx) => (
+                  <div key={idx} style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                    {line}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ====================================================
+            MODE C: LIBRARY & PACKAGE WORKSPACE
+            ==================================================== */}
+        {isLibrary && (
+          <div style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-4)',
+            background: 'var(--color-bg-elevated)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}>
+            <div style={{
+              fontSize: 'var(--font-size-xs)',
+              fontWeight: 'var(--font-weight-semibold)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              color: 'var(--color-text-tertiary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}>
+              <Package size={13} />
+              Package & Library Integration
+            </div>
+
+            {/* Installation Command */}
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-tertiary)', marginBottom: '4px' }}>
+                Installation Command
+              </div>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: 'var(--space-2) var(--space-3)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--color-bg-secondary)',
+                border: '1px solid var(--color-border)',
+                fontFamily: 'monospace',
+                fontSize: '12px',
+              }}>
+                <code>{getInstallSnippet()}</code>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ height: '22px', fontSize: '11px', padding: '0 6px' }}
+                  onClick={() => navigator.clipboard?.writeText(getInstallSnippet())}
+                >
+                  <Copy size={11} /> Copy
+                </button>
+              </div>
+            </div>
+
+            {/* Test Suite Runner Action */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginTop: 'var(--space-1)' }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleRunLibraryTests}
+                disabled={testRunning}
+              >
+                {testRunning ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                Run Package Test Suite
+              </button>
+            </div>
+
+            {/* Test output preview */}
+            {testOutput && (
+              <pre style={{
+                padding: 'var(--space-3)',
+                borderRadius: 'var(--radius-sm)',
+                background: '#0d1117',
+                color: '#c9d1d9',
+                fontFamily: 'monospace',
+                fontSize: '11px',
+                margin: 0,
+                maxHeight: '160px',
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+              }}>
+                {testOutput}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {/* ====================================================
+            MODE D: BACKGROUND WORKER & AUTOMATION DASHBOARD
+            ==================================================== */}
+        {isWorker && (
+          <div style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-4)',
+            background: 'var(--color-bg-elevated)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-3)',
+          }}>
+            <div style={{
+              fontSize: 'var(--font-size-xs)',
+              fontWeight: 'var(--font-weight-semibold)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              color: 'var(--color-text-tertiary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}>
+              <Activity size={13} />
+              Background Worker & Broker Status
+            </div>
+
+            <div style={{
+              padding: 'var(--space-3)',
+              borderRadius: 'var(--radius-sm)',
+              background: hasBrokerConfig ? 'var(--color-success-bg)' : 'var(--color-warning-bg)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}>
+              <span style={{
+                fontSize: '12px',
+                color: hasBrokerConfig ? 'var(--color-success)' : 'var(--color-warning)',
+              }}>
+                {hasBrokerConfig
+                  ? 'Message broker environment configured.'
+                  : 'No broker connection string detected (e.g. REDIS_URL, CELERY_BROKER_URL). Configure environment variables if needed.'}
+              </span>
+              {!hasBrokerConfig && (
+                <button className="btn btn-secondary btn-sm" onClick={onOpenConfig}>
+                  Configure Broker
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Project Structure & Entry Points Metadata */}
         <div style={{
           border: '1px solid var(--color-border)',
           borderRadius: 'var(--radius-md)',
@@ -385,9 +972,9 @@ function ProjectOverviewView({
             color: 'var(--color-text-tertiary)',
             marginBottom: 'var(--space-3)',
           }}>
-            Project Structure & Configuration
+            Repository Structure & Runtime Configuration
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--space-3)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--space-3)' }}>
             <div>
               <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>Entry Point</div>
               <div style={{ fontSize: 'var(--font-size-sm)', fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: '2px' }}>
@@ -397,9 +984,17 @@ function ProjectOverviewView({
             <div>
               <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>Start Command</div>
               <div style={{ fontSize: 'var(--font-size-sm)', fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: '2px' }}>
-                {app.startCommand || (isBackend ? 'npm start' : 'node index.js')}
+                {app.startCommand || 'None'}
               </div>
             </div>
+            {app.projectRoot && (
+              <div>
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>Project Root</div>
+                <div style={{ fontSize: 'var(--font-size-sm)', fontFamily: 'monospace', color: 'var(--color-text-primary)', marginTop: '2px' }}>
+                  ./{app.projectRoot}
+                </div>
+              </div>
+            )}
             {app.port ? (
               <div>
                 <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>Active Port</div>
@@ -417,94 +1012,27 @@ function ProjectOverviewView({
           </div>
         </div>
 
-        {/* Available Actions Block */}
-        <div style={{
-          border: '1px solid var(--color-border)',
-          borderRadius: 'var(--radius-md)',
-          padding: 'var(--space-4)',
-          background: 'var(--color-bg-elevated)',
-        }}>
-          <div style={{
-            fontSize: 'var(--font-size-xs)',
-            fontWeight: 'var(--font-weight-semibold)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            color: 'var(--color-text-tertiary)',
-            marginBottom: 'var(--space-3)',
-          }}>
-            Available Actions
-          </div>
-
-          <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
-            {/* Backend Actions */}
-            {isBackend && (
-              <>
-                {app.status === 'running' ? (
-                  <>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={handleCheckHealth}
-                      disabled={checkingHealth}
-                    >
-                      {checkingHealth ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />}
-                      Check Health Endpoint
-                    </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={async () => {
-                        await stopRunningApp(app.id);
-                        updateAppStatus(app.id, 'stopped');
-                      }}
-                    >
-                      <Square size={14} />
-                      Stop Service
-                    </button>
-                  </>
-                ) : (
-                  <button className="btn btn-primary btn-sm" onClick={onLaunch}>
-                    <Play size={14} />
-                    Start Service
-                  </button>
-                )}
-              </>
-            )}
-
-            <button className="btn btn-secondary btn-sm" onClick={onOpenConfig}>
-              <Settings size={14} />
-              Configure Project
+        {/* Global Action Buttons */}
+        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+          {isBackend && app.status !== 'running' && (
+            <button className="btn btn-primary btn-sm" onClick={onLaunch}>
+              <Play size={14} />
+              Start Service
             </button>
-
-            <button className="btn btn-ghost btn-sm" onClick={() => setLogsOpen(!logsOpen)}>
-              <FileCode size={14} />
-              {logsOpen ? 'Hide Logs' : 'View Logs'}
-            </button>
-          </div>
-
-          {/* Health check results panel */}
-          {healthStatus && (
-            <div style={{
-              marginTop: 'var(--space-3)',
-              padding: 'var(--space-3)',
-              borderRadius: 'var(--radius-sm)',
-              background: healthStatus.ok ? 'var(--color-success-bg)' : 'var(--color-error-bg)',
-              fontSize: 'var(--font-size-xs)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}>
-              <span style={{ color: healthStatus.ok ? 'var(--color-success)' : 'var(--color-error)' }}>
-                {healthStatus.message}
-              </span>
-              {healthStatus.latency !== undefined && (
-                <span style={{ color: 'var(--color-text-tertiary)', fontFamily: 'monospace' }}>
-                  {healthStatus.latency}ms
-                </span>
-              )}
-            </div>
           )}
+
+          <button className="btn btn-secondary btn-sm" onClick={onOpenConfig}>
+            <Settings size={14} />
+            Configure Project
+          </button>
+
+          <button className="btn btn-ghost btn-sm" onClick={() => setLogsOpen(!logsOpen)}>
+            <FileCode size={14} />
+            {logsOpen ? 'Hide Diagnostics' : 'View Diagnostics'}
+          </button>
         </div>
 
-        {/* Runtime Diagnostics Logs Panel */}
+        {/* Diagnostics & Output Logs Panel */}
         {logsOpen && (
           <div style={{
             border: '1px solid var(--color-border)',
@@ -547,7 +1075,7 @@ function ProjectOverviewView({
 {`[Repomova Gateway] Workspace active for: ${app.repoFullName}
 [Repomova Gateway] Detected Type: ${RUNTIME_LABELS[app.runtimeType]}
 [Repomova Gateway] Status: ${app.status}
-${app.port ? `[Repomova Gateway] Listening Port: ${app.port}\n` : ''}${app.detectionDetails ? `[Repomova Gateway] Diagnostics: ${app.detectionDetails}\n` : ''}${isBackend ? `[Repomova Service] Backend HTTP process initialized and listening for requests.` : `[Repomova Library] Repository imported. Ready for CLI execution or downstream dependency integration.`}`}
+${app.port ? `[Repomova Gateway] Listening Port: ${app.port}\n` : ''}${app.projectRoot ? `[Repomova Gateway] Monorepo Root: ./${app.projectRoot}\n` : ''}${app.detectionDetails ? `[Repomova Gateway] Diagnostics: ${app.detectionDetails}\n` : ''}${isBackend ? `[Repomova Service] Backend HTTP process initialized and listening for requests.` : `[Repomova Workspace] Project workspace ready.`}`}
             </pre>
           </div>
         )}

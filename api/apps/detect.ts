@@ -146,6 +146,63 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       } catch {
         // continue
       }
+
+      // 3. Try checking go.mod
+      try {
+        const goRes = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/go.mod`);
+        if (goRes.ok) {
+          runtimeType = 'go';
+          details = 'Go application';
+          hasWebInterface = false;
+          projectTypeCategory = 'backend';
+          startCommand = 'go run .';
+          buildCommand = 'go build .';
+          startCommandSource = 'Auto-configured: Go entry point';
+          buildCommandSource = 'Auto-configured: go build';
+          inspected = true;
+          break;
+        }
+      } catch {
+        // continue
+      }
+
+      // 4. Try checking Cargo.toml
+      try {
+        const cargoRes = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/Cargo.toml`);
+        if (cargoRes.ok) {
+          runtimeType = 'rust';
+          details = 'Rust application';
+          hasWebInterface = false;
+          projectTypeCategory = 'backend';
+          startCommand = 'cargo run';
+          buildCommand = 'cargo build';
+          startCommandSource = 'Auto-configured: cargo run';
+          buildCommandSource = 'Auto-configured: cargo build';
+          inspected = true;
+          break;
+        }
+      } catch {
+        // continue
+      }
+
+      // 5. Try checking pom.xml
+      try {
+        const pomRes = await fetch(`https://raw.githubusercontent.com/${owner}/${repo}/${branch}/pom.xml`);
+        if (pomRes.ok) {
+          runtimeType = 'java';
+          details = 'Java Maven application';
+          hasWebInterface = false;
+          projectTypeCategory = 'backend';
+          startCommand = './mvnw spring-boot:run';
+          buildCommand = './mvnw clean package';
+          startCommandSource = 'Auto-configured: maven start';
+          buildCommandSource = 'Auto-configured: maven package';
+          inspected = true;
+          break;
+        }
+      } catch {
+        // continue
+      }
     }
 
     // Try checking .env.example
@@ -212,6 +269,48 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       buildCommand = 'npm run build';
       hasWebInterface = true;
       projectTypeCategory = 'frontend';
+    } else if (lowerName.includes('celery') || lowerName.includes('worker') || lowerName.includes('queue')) {
+      runtimeType = 'worker';
+      details = 'Background Worker / Queue Consumer';
+      startCommand = 'python worker.py';
+      buildCommand = undefined;
+      hasWebInterface = false;
+      projectTypeCategory = 'worker';
+    } else if (lowerName.includes('cli') || lowerName.includes('tool')) {
+      runtimeType = 'cli';
+      details = 'Command-Line Tool (CLI)';
+      startCommand = 'node bin/cli.js';
+      buildCommand = undefined;
+      hasWebInterface = false;
+      projectTypeCategory = 'cli';
+    } else if (lowerName.includes('lib') || lowerName.includes('sdk') || lowerName.includes('package')) {
+      runtimeType = 'library';
+      details = 'Software Library / Package';
+      startCommand = undefined as unknown as string;
+      buildCommand = 'npm test';
+      hasWebInterface = false;
+      projectTypeCategory = 'library';
+    } else if (lowerName.includes('golang') || lowerName.includes('go-') || lowerName.endsWith('-go')) {
+      runtimeType = 'go';
+      details = 'Go application';
+      startCommand = 'go run .';
+      buildCommand = 'go build .';
+      hasWebInterface = false;
+      projectTypeCategory = 'backend';
+    } else if (lowerName.includes('rust') || lowerName.includes('cargo')) {
+      runtimeType = 'rust';
+      details = 'Rust application';
+      startCommand = 'cargo run';
+      buildCommand = 'cargo build';
+      hasWebInterface = false;
+      projectTypeCategory = 'backend';
+    } else if (lowerName.includes('java') || lowerName.includes('spring')) {
+      runtimeType = 'java';
+      details = 'Java application';
+      startCommand = './mvnw spring-boot:run';
+      buildCommand = './mvnw clean package';
+      hasWebInterface = false;
+      projectTypeCategory = 'backend';
     } else if (
       lowerName.includes('python') ||
       lowerName.includes('flask') ||
