@@ -19,7 +19,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { useWorkspaceStore } from '../store';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { repomovaAuth } from '../lib/auth';
 
 export function Sidebar() {
   const {
@@ -325,12 +325,10 @@ export function Sidebar() {
                     className="profile-menu-item profile-menu-item-danger"
                     role="menuitem"
                     onClick={async () => {
-                      if (isSupabaseConfigured) {
-                        try {
-                          await supabase.auth.signOut();
-                        } catch (err) {
-                          console.warn('[Repomova] Sign out error:', err);
-                        }
+                      try {
+                        await repomovaAuth.signOut();
+                      } catch (err) {
+                        console.warn('[Repomova] Sign out error:', err);
                       }
                       setUser(null);
                       setProfileMenuOpen(false);

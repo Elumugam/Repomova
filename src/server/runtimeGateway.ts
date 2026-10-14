@@ -8,6 +8,13 @@ import { promisify } from 'node:util';
 import type { Plugin, ViteDevServer } from 'vite';
 import type { RuntimeType, AppStatus, DetectedEnvVar } from '../types.ts';
 import { fetchRepositoryHtml } from '../lib/staticPreview.ts';
+import {
+  signUpUser,
+  signInUser,
+  getSessionUser,
+  signOutUser,
+  updateUserProfile,
+} from './authService.ts';
 
 const execAsync = promisify(exec);
 
@@ -720,6 +727,114 @@ export function runtimeGatewayPlugin(): Plugin {
         if (url.startsWith('/api/health')) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'ok', runningApps: runningInstances.size }));
+          return;
+        }
+
+        // Helper: Read JSON request body
+        const readJsonBody = async (): Promise<any> => {
+          return new Promise((resolve) => {
+            let data = '';
+            req.on('data', (chunk) => { data += chunk; });
+            req.on('end', () => {
+              try {
+                resolve(JSON.parse(data || '{}'));
+              } catch {
+                resolve({});
+              }
+            });
+          });
+        };
+
+        // Helper: Extract Bearer token from headers or URL
+        const extractBearerToken = (): string => {
+          const authHeader = req.headers.authorization || '';
+          if (authHeader.startsWith('Bearer ')) {
+            return authHeader.slice(7).trim();
+          }
+          const parsed = new URL(url, 'http://127.0.0.1:5173');
+          return parsed.searchParams.get('token') || '';
+        };
+
+        // ============================================
+        // Repomova Dedicated Authentication Endpoints
+        // ============================================
+
+        // POST /api/auth/signup
+        if (url.startsWith('/api/auth/signup') && req.method === 'POST') {
+          try {
+            const body = await readJsonBody();
+            const result = await signUpUser(body);
+            res.writeHead(201, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+          } catch (err: any) {
+            const status = err.statusCode || 400;
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Registration failed' }));
+          }
+          return;
+        }
+
+        // POST /api/auth/signin
+        if (url.startsWith('/api/auth/signin') && req.method === 'POST') {
+          try {
+            const body = await readJsonBody();
+            const result = await signInUser(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(result));
+          } catch (err: any) {
+            const status = err.statusCode || 401;
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Invalid credentials' }));
+          }
+          return;
+        }
+
+        // GET /api/auth/session
+        if (url.startsWith('/api/auth/session') && req.method === 'GET') {
+          try {
+            const token = extractBearerToken();
+            const user = await getSessionUser(token);
+            if (!user) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Session invalid or expired' }));
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ user, session: { token, user } }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Failed to verify session' }));
+          }
+          return;
+        }
+
+        // POST /api/auth/signout
+        if (url.startsWith('/api/auth/signout') && req.method === 'POST') {
+          try {
+            const token = extractBearerToken();
+            await signOutUser(token);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Failed to sign out' }));
+          }
+          return;
+        }
+
+        // POST /api/auth/update-profile
+        if (url.startsWith('/api/auth/update-profile') && req.method === 'POST') {
+          try {
+            const token = extractBearerToken();
+            const body = await readJsonBody();
+            const updatedUser = await updateUserProfile(token, body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ user: updatedUser }));
+          } catch (err: any) {
+            const status = err.statusCode || 400;
+            res.writeHead(status, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message || 'Failed to update profile' }));
+          }
           return;
         }
 

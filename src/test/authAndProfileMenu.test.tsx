@@ -6,7 +6,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { Sidebar } from '../components/Sidebar';
 import { SettingsView } from '../components/SettingsView';
 import { useWorkspaceStore } from '../store';
-import { supabase } from '../lib/supabase';
+import { repomovaAuth } from '../lib/auth';
 
 describe('Authentication Flow & Profile Menu', () => {
   beforeEach(() => {
@@ -196,7 +196,7 @@ describe('Authentication Flow & Profile Menu', () => {
     });
 
     it('selecting Sign Out invokes signOut and clears user state', async () => {
-      const signOutSpy = vi.spyOn(supabase.auth, 'signOut').mockResolvedValue({ error: null });
+      const signOutSpy = vi.spyOn(repomovaAuth, 'signOut').mockResolvedValue({ error: null });
 
       render(<Sidebar />);
       const profileBtn = screen.getByRole('button', { name: /Alex Smith/i });
@@ -259,19 +259,38 @@ describe('Authentication Flow & Profile Menu', () => {
       });
     });
 
+    it('validates email format before submitting', async () => {
+      render(<SettingsView />);
+
+      fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
+        target: { value: 'invalid-email-address' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
+        target: { value: 'validPassword123' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Please enter a valid email address/i)).toBeInTheDocument();
+      });
+    });
+
     it('signs in successfully and updates user store immediately', async () => {
       const mockSession = {
         user: {
           id: 'user-real-999',
           email: 'jane@example.com',
-          created_at: '2026-03-01T00:00:00Z',
-          user_metadata: { displayName: 'Jane Doe' },
+          displayName: 'Jane Doe',
+          createdAt: '2026-03-01T00:00:00Z',
         },
-        access_token: 'fake-token',
+        token: 'token-abc-123',
       };
 
-      vi.spyOn(supabase.auth, 'signInWithPassword').mockResolvedValue({
-        data: { user: mockSession.user as any, session: mockSession as any },
+      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
+        data: { user: mockSession.user, session: mockSession },
+        user: mockSession.user,
+        session: mockSession,
         error: null,
       });
 
@@ -299,14 +318,11 @@ describe('Authentication Flow & Profile Menu', () => {
     });
 
     it('displays user-friendly error message on invalid credentials', async () => {
-      vi.spyOn(supabase.auth, 'signInWithPassword').mockResolvedValue({
+      vi.spyOn(repomovaAuth, 'signIn').mockResolvedValue({
         data: { user: null, session: null },
-        error: {
-          name: 'AuthApiError',
-          message: 'Invalid login credentials',
-          code: 'invalid_credentials',
-          status: 400,
-        } as any,
+        user: null,
+        session: null,
+        error: new Error('Invalid email or password. Please verify your credentials and try again.'),
       });
 
       render(<SettingsView />);
@@ -325,104 +341,95 @@ describe('Authentication Flow & Profile Menu', () => {
       });
     });
 
-    it('handles unconfirmed email on sign-in and offers resend confirmation', async () => {
-      vi.spyOn(supabase.auth, 'signInWithPassword').mockResolvedValue({
-        data: { user: null, session: null },
-        error: {
-          name: 'AuthApiError',
-          message: 'Email not confirmed',
-          code: 'email_not_confirmed',
-          status: 400,
-        } as any,
-      });
-
-      const resendSpy = vi.spyOn(supabase.auth, 'resend').mockResolvedValue({
-        data: { user: null, session: null },
-        error: null,
-      });
-
+    it('validates password confirmation matching on registration', async () => {
+      useWorkspaceStore.setState({ authMode: 'signup' });
       render(<SettingsView />);
 
+      fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
+        target: { value: 'Alex Tester' },
+      });
       fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'unconfirmed@example.com' },
+        target: { value: 'alex@example.com' },
       });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
-        target: { value: 'password123' },
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'mypassword123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
+        target: { value: 'mismatch456' },
       });
 
-      fireEvent.click(screen.getByRole('button', { name: /^Sign In/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
 
       await waitFor(() => {
-        expect(screen.getByText(/Email Verification Required/i)).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /Resend Confirmation Email/i })).toBeInTheDocument();
-      });
-
-      // Test resending confirmation email
-      fireEvent.click(screen.getByRole('button', { name: /Resend Confirmation Email/i }));
-
-      await waitFor(() => {
-        expect(resendSpy).toHaveBeenCalledWith({
-          type: 'signup',
-          email: 'unconfirmed@example.com',
-        });
-        expect(screen.getByText(/Confirmation link sent to unconfirmed@example.com/i)).toBeInTheDocument();
+        expect(screen.getByText(/Passwords do not match. Please re-enter your password/i)).toBeInTheDocument();
       });
     });
 
-    it('handles registration requiring email verification without prematurely logging in', async () => {
+    it('registers new user successfully with password confirmation and updates store', async () => {
       useWorkspaceStore.setState({ authMode: 'signup' });
 
-      vi.spyOn(supabase.auth, 'signUp').mockResolvedValue({
+      const mockRegisteredUser = {
+        id: 'new-user-123',
+        email: 'alex@example.com',
+        displayName: 'Alex Tester',
+        createdAt: '2026-03-01T00:00:00Z',
+      };
+
+      const signUpSpy = vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
         data: {
-          user: {
-            id: 'unconfirmed-user-1',
-            email: 'newuser@example.com',
-            created_at: '2026-03-01T00:00:00Z',
-            identities: [{ id: 'identity-1' }],
-          } as any,
-          session: null, // Email confirmation required!
+          user: mockRegisteredUser,
+          session: { user: mockRegisteredUser, token: 'token-reg-123' },
         },
+        user: mockRegisteredUser,
+        session: { user: mockRegisteredUser, token: 'token-reg-123' },
         error: null,
+        message: 'Account created and signed in successfully!',
       });
 
       render(<SettingsView />);
 
       fireEvent.change(screen.getByPlaceholderText('Jane Doe'), {
-        target: { value: 'New Developer' },
+        target: { value: 'Alex Tester' },
       });
       fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
-        target: { value: 'newuser@example.com' },
+        target: { value: 'alex@example.com' },
       });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'securePass123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
         target: { value: 'securePass123' },
       });
 
       fireEvent.click(screen.getByRole('button', { name: /^Create Account/i }));
 
       await waitFor(() => {
-        // User should NOT be logged in yet
-        expect(useWorkspaceStore.getState().user).toBeNull();
-        expect(useWorkspaceStore.getState().isAuthenticated).toBe(false);
-        // Prompt to check email appears
-        expect(screen.getByText(/Registration successful! We sent a confirmation link/i)).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: /Resend Confirmation Email/i })).toBeInTheDocument();
+        expect(signUpSpy).toHaveBeenCalledWith({
+          email: 'alex@example.com',
+          password: 'securePass123',
+          confirmPassword: 'securePass123',
+          displayName: 'Alex Tester',
+        });
+        expect(useWorkspaceStore.getState().user).toEqual(
+          expect.objectContaining({
+            id: 'new-user-123',
+            email: 'alex@example.com',
+            displayName: 'Alex Tester',
+          })
+        );
+        expect(useWorkspaceStore.getState().isAuthenticated).toBe(true);
+        expect(screen.getByText(/Account created and signed in successfully!/i)).toBeInTheDocument();
       });
     });
 
     it('detects duplicate user on sign-up and guides user to sign in', async () => {
       useWorkspaceStore.setState({ authMode: 'signup' });
 
-      // Supabase returns empty identities array when user already exists with email confirmations on
-      vi.spyOn(supabase.auth, 'signUp').mockResolvedValue({
-        data: {
-          user: {
-            id: 'existing-id',
-            email: 'existing@example.com',
-            identities: [], // empty identities indicates duplicate account
-          } as any,
-          session: null,
-        },
-        error: null,
+      vi.spyOn(repomovaAuth, 'signUp').mockResolvedValue({
+        data: { user: null, session: null },
+        user: null,
+        session: null,
+        error: new Error('An account with this email address already exists. Please sign in instead.'),
       });
 
       render(<SettingsView />);
@@ -430,7 +437,10 @@ describe('Authentication Flow & Profile Menu', () => {
       fireEvent.change(screen.getByPlaceholderText('you@example.com'), {
         target: { value: 'existing@example.com' },
       });
-      fireEvent.change(screen.getByPlaceholderText(/••••••••/i), {
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (min 6 characters)'), {
+        target: { value: 'securePass123' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('•••••••• (re-enter password)'), {
         target: { value: 'securePass123' },
       });
 
@@ -452,13 +462,20 @@ describe('Authentication Flow & Profile Menu', () => {
         isAuthenticated: true,
       });
 
-      const updateSpy = vi.spyOn(supabase.auth, 'updateUser').mockResolvedValue({
+      const updateSpy = vi.spyOn(repomovaAuth, 'updateUser').mockResolvedValue({
         data: {
           user: {
             id: 'user-update-1',
             email: 'developer@example.com',
-            user_metadata: { displayName: 'Updated Name' },
-          } as any,
+            displayName: 'Updated Name',
+            createdAt: '2026-01-01T00:00:00Z',
+          },
+        },
+        user: {
+          id: 'user-update-1',
+          email: 'developer@example.com',
+          displayName: 'Updated Name',
+          createdAt: '2026-01-01T00:00:00Z',
         },
         error: null,
       });
@@ -473,7 +490,7 @@ describe('Authentication Flow & Profile Menu', () => {
 
       await waitFor(() => {
         expect(updateSpy).toHaveBeenCalledWith({
-          data: { displayName: 'Updated Name', full_name: 'Updated Name' },
+          displayName: 'Updated Name',
         });
         expect(useWorkspaceStore.getState().user?.displayName).toBe('Updated Name');
         expect(screen.getByText(/Profile updated successfully!/i)).toBeInTheDocument();

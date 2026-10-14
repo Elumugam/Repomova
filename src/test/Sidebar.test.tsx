@@ -15,6 +15,7 @@ describe('Sidebar Component', () => {
       connectModalOpen: false,
       theme: 'light',
       user: null,
+      bookmarkedAppIds: [],
     });
   });
 
@@ -134,5 +135,67 @@ describe('Sidebar Component', () => {
     // Toggle collapse
     fireEvent.click(toggleBtn);
     expect(localStorage.getItem('repomova-sidebar-collapsed')).toBe('true');
+  });
+
+  it('bottom Theme Toggle and Profile icons remain accessible in both expanded and collapsed layouts', () => {
+    // 1. Collapsed layout
+    const { unmount } = render(<Sidebar />);
+    const themeBtnCollapsed = screen.getByRole('button', { name: /Dark Mode|Light Mode/i });
+    const profileBtnCollapsed = screen.getByRole('button', { name: /^Profile/i });
+
+    expect(themeBtnCollapsed).toBeInTheDocument();
+    expect(profileBtnCollapsed).toBeInTheDocument();
+
+    // Toggle theme works from bottom icon
+    fireEvent.click(themeBtnCollapsed);
+    expect(useWorkspaceStore.getState().theme).toBe('dark');
+    unmount();
+
+    // 2. Expanded layout
+    useWorkspaceStore.setState({ sidebarCollapsed: false });
+    render(<Sidebar />);
+    const themeBtnExpanded = screen.getByRole('button', { name: /Dark Mode|Light Mode/i });
+    const profileBtnExpanded = screen.getByRole('button', { name: /^Profile/i });
+
+    expect(themeBtnExpanded).toBeInTheDocument();
+    expect(profileBtnExpanded).toBeInTheDocument();
+  });
+
+  it('bottom options remain visible and accessible when many bookmarks are present', () => {
+    useWorkspaceStore.setState({
+      sidebarCollapsed: false,
+      connectedApps: [
+        { id: 'app-1', userId: 'u1', repoOwner: 'o', repoName: 'App Alpha', repoFullName: 'o/app-1', repoUrl: 'https://github.com/o/app-1', defaultBranch: 'main', cloneStatus: 'cloned', runtimeType: 'static', status: 'running', lastOpened: null, createdAt: '', updatedAt: '' },
+        { id: 'app-2', userId: 'u1', repoOwner: 'o', repoName: 'App Beta', repoFullName: 'o/app-2', repoUrl: 'https://github.com/o/app-2', defaultBranch: 'main', cloneStatus: 'cloned', runtimeType: 'react', status: 'running', lastOpened: null, createdAt: '', updatedAt: '' },
+        { id: 'app-3', userId: 'u1', repoOwner: 'o', repoName: 'App Gamma', repoFullName: 'o/app-3', repoUrl: 'https://github.com/o/app-3', defaultBranch: 'main', cloneStatus: 'cloned', runtimeType: 'nextjs', status: 'stopped', lastOpened: null, createdAt: '', updatedAt: '' },
+      ],
+      bookmarkedAppIds: ['app-1', 'app-2', 'app-3'],
+    });
+
+    render(<Sidebar />);
+
+    // Bookmarked items appear in the navigation area
+    expect(screen.getByRole('button', { name: /Open bookmarked App Alpha/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open bookmarked App Beta/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open bookmarked App Gamma/i })).toBeInTheDocument();
+
+    // Bottom controls (Theme Toggle and Profile) remain accessible and visible
+    expect(screen.getByRole('button', { name: /Dark Mode|Light Mode/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Profile/i })).toBeInTheDocument();
+  });
+
+  it('renders mobile overlay and closes sidebar when clicking overlay on mobile screens', () => {
+    useWorkspaceStore.setState({ sidebarOpen: true });
+    render(<Sidebar />);
+
+    const sidebar = screen.getByRole('complementary', { name: /Main Navigation/i });
+    expect(sidebar).toHaveClass('open');
+
+    // Click outside overlay to close mobile sidebar
+    const overlay = document.querySelector('.modal-overlay');
+    expect(overlay).toBeInTheDocument();
+    fireEvent.click(overlay!);
+
+    expect(useWorkspaceStore.getState().sidebarOpen).toBe(false);
   });
 });

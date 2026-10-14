@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { Github } from './GithubIcon';
 import { useWorkspaceStore } from '../store';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { repomovaAuth } from '../lib/auth';
 
 type SettingsTab = 'account' | 'github' | 'appearance' | 'security';
 
@@ -84,14 +84,13 @@ function AccountSettings() {
   const { user, isAuthenticated, setUser, authMode, setAuthMode } = useWorkspaceStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [unconfirmedEmail, setUnconfirmedEmail] = useState('');
-  const [resendSuccess, setResendSuccess] = useState('');
 
   // Editing profile state for signed-in users
   const [editName, setEditName] = useState(user?.displayName || '');
@@ -102,25 +101,25 @@ function AccountSettings() {
   function formatAuthError(err: any): string {
     if (!err) return 'An unexpected error occurred.';
     const msg = err.message || String(err);
-    const code = err.code || '';
 
-    if (code === 'invalid_credentials' || msg.toLowerCase().includes('invalid login credentials')) {
-      return 'Invalid email or password. Please verify your credentials and try again.';
+    if (msg.toLowerCase().includes('passwords do not match')) {
+      return 'Passwords do not match. Please re-enter your password.';
     }
-    if (code === 'email_not_confirmed' || msg.toLowerCase().includes('email not confirmed')) {
-      return 'Your email address has not been confirmed yet. Please verify your email before signing in.';
-    }
-    if (code === 'user_already_exists' || msg.toLowerCase().includes('already registered')) {
+    if (msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('already registered')) {
       return 'An account with this email address already exists. Please sign in instead.';
     }
-    if (msg.toLowerCase().includes('password should be at least')) {
+    if (
+      msg.toLowerCase().includes('invalid email or password') ||
+      msg.toLowerCase().includes('invalid login credentials') ||
+      msg.toLowerCase().includes('invalid credentials')
+    ) {
+      return 'Invalid email or password. Please verify your credentials and try again.';
+    }
+    if (msg.toLowerCase().includes('password must be at least') || msg.toLowerCase().includes('password should be at least')) {
       return 'Password must be at least 6 characters long.';
     }
     if (msg.toLowerCase().includes('valid email')) {
       return 'Please enter a valid email address.';
-    }
-    if (msg.toLowerCase().includes('rate limit') || code === 'over_email_send_rate_limit') {
-      return 'Too many requests. Please wait a moment before trying again.';
     }
     if (msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('network')) {
       return 'Network connection failure. Please check your internet connection.';
@@ -132,22 +131,29 @@ function AccountSettings() {
     e.preventDefault();
     setError('');
     setSuccess('');
-    setResendSuccess('');
-    setUnconfirmedEmail('');
-
-    if (!isSupabaseConfigured) {
-      setError('Supabase is not configured. Please configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable authentication.');
-      return;
-    }
 
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
       setError('Email address is required.');
       return;
     }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setError('Please enter a valid email address.');
+      return;
+    }
+
     if (password.length < 6) {
       setError('Password must be at least 6 characters long.');
       return;
+    }
+
+    if (authMode === 'signup') {
+      if (confirmPassword !== password) {
+        setError('Passwords do not match. Please re-enter your password.');
+        return;
+      }
     }
 
     setLoading(true);
@@ -155,72 +161,35 @@ function AccountSettings() {
     try {
       if (authMode === 'signup') {
         const trimmedName = displayName.trim() || trimmedEmail.split('@')[0];
-        const { data, error: authError } = await supabase.auth.signUp({
+        const res = await repomovaAuth.signUp({
           email: trimmedEmail,
           password,
-          options: {
-            data: {
-              displayName: trimmedName,
-              full_name: trimmedName,
-            },
-          },
+          confirmPassword,
+          displayName: trimmedName,
         });
 
-        if (authError) throw authError;
+        if (res.error) {
+          setError(formatAuthError(res.error));
+          return;
+        }
 
-        if (data.user) {
-          // If Supabase returns empty identities, user already exists
-          if (data.user.identities && data.user.identities.length === 0) {
-            setError('An account with this email address already exists. Please sign in instead.');
-            return;
-          }
-
-          if (data.session) {
-            // Email auto-confirmed or confirmation disabled
-            setUser({
-              id: data.user.id,
-              email: data.user.email || trimmedEmail,
-              displayName:
-                data.user.user_metadata?.displayName ||
-                trimmedName,
-              avatarUrl: data.user.user_metadata?.avatar_url,
-              createdAt: data.user.created_at,
-            });
-            setSuccess('Account created and signed in successfully!');
-          } else {
-            // Email confirmation required
-            setUnconfirmedEmail(trimmedEmail);
-            setSuccess(`Registration successful! We've sent a verification email to ${trimmedEmail}. Please check your inbox and verify your email before signing in.`);
-          }
+        if (res.user) {
+          setUser(res.user);
+          setSuccess('Account created and signed in successfully!');
         }
       } else {
-        const { data, error: authError } = await supabase.auth.signInWithPassword({
+        const res = await repomovaAuth.signIn({
           email: trimmedEmail,
           password,
         });
 
-        if (authError) {
-          if (
-            authError.code === 'email_not_confirmed' ||
-            authError.message.toLowerCase().includes('email not confirmed')
-          ) {
-            setUnconfirmedEmail(trimmedEmail);
-          }
-          throw authError;
+        if (res.error) {
+          setError(formatAuthError(res.error));
+          return;
         }
 
-        if (data.user && data.session) {
-          setUser({
-            id: data.user.id,
-            email: data.user.email || trimmedEmail,
-            displayName:
-              data.user.user_metadata?.displayName ||
-              data.user.user_metadata?.full_name ||
-              data.user.email?.split('@')[0] ||
-              'User',
-            avatarUrl: data.user.user_metadata?.avatar_url,
-            createdAt: data.user.created_at,
-          });
+        if (res.user) {
+          setUser(res.user);
           setSuccess('Signed in successfully!');
         }
       }
@@ -231,36 +200,11 @@ function AccountSettings() {
     }
   }
 
-  async function handleResendConfirmation() {
-    const targetEmail = unconfirmedEmail || email.trim();
-    if (!targetEmail) return;
-
-    setResending(true);
-    setResendSuccess('');
-    setError('');
-
-    try {
-      const { error: resendErr } = await supabase.auth.resend({
-        type: 'signup',
-        email: targetEmail,
-      });
-
-      if (resendErr) throw resendErr;
-      setResendSuccess(`Confirmation link sent to ${targetEmail}! Please check your inbox and spam folder.`);
-    } catch (err: any) {
-      setError(formatAuthError(err));
-    } finally {
-      setResending(false);
-    }
-  }
-
   async function handleLogout() {
-    if (isSupabaseConfigured) {
-      try {
-        await supabase.auth.signOut();
-      } catch (err) {
-        console.warn('[Repomova] Sign out error:', err);
-      }
+    try {
+      await repomovaAuth.signOut();
+    } catch (err) {
+      console.warn('[Repomova] Sign out error:', err);
     }
     setUser(null);
   }
@@ -273,21 +217,17 @@ function AccountSettings() {
     setProfileMessage('');
 
     try {
-      if (isSupabaseConfigured) {
-        const { data, error: updateErr } = await supabase.auth.updateUser({
-          data: {
-            displayName: editName.trim(),
-            full_name: editName.trim(),
-          },
-        });
-        if (updateErr) throw updateErr;
+      const res = await repomovaAuth.updateUser({
+        displayName: editName.trim(),
+      });
 
-        if (user && data.user) {
-          setUser({
-            ...user,
-            displayName: editName.trim(),
-          });
-        }
+      if (res.error) throw res.error;
+
+      if (user && res.user) {
+        setUser({
+          ...user,
+          displayName: res.user.displayName || editName.trim(),
+        });
       } else if (user) {
         setUser({
           ...user,
@@ -312,6 +252,23 @@ function AccountSettings() {
         }}>
           Account Profile
         </h2>
+
+        {success && (
+          <div style={{
+            padding: 'var(--space-3)',
+            background: 'var(--color-success-bg)',
+            borderRadius: 'var(--radius-md)',
+            fontSize: 'var(--font-size-sm)',
+            color: 'var(--color-success)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            marginBottom: 'var(--space-4)',
+          }}>
+            <Check size={14} />
+            <span>{success}</span>
+          </div>
+        )}
 
         {/* User Card */}
         <div style={{
@@ -415,60 +372,7 @@ function AccountSettings() {
           : 'Create a new account to get started with Repomova.'}
       </p>
 
-      {!isSupabaseConfigured && (
-        <div style={{
-          padding: 'var(--space-3)',
-          background: 'var(--color-warning-bg)',
-          borderRadius: 'var(--radius-md)',
-          fontSize: 'var(--font-size-xs)',
-          color: 'var(--color-warning)',
-          marginBottom: 'var(--space-4)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-        }}>
-          <AlertCircle size={14} />
-          Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable authentication.
-        </div>
-      )}
-
-      {/* Unconfirmed Email Notice & Resend Option */}
-      {unconfirmedEmail && (
-        <div style={{
-          padding: 'var(--space-4)',
-          background: 'var(--color-warning-bg)',
-          border: '1px solid var(--color-warning)',
-          borderRadius: 'var(--radius-md)',
-          marginBottom: 'var(--space-4)',
-          maxWidth: '380px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-warning)', fontWeight: 'var(--font-weight-medium)', fontSize: 'var(--font-size-sm)' }}>
-            <Mail size={16} />
-            Email Verification Required
-          </div>
-          <p style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', marginTop: 'var(--space-1)', marginBottom: 'var(--space-3)' }}>
-            Registration successful! We sent a confirmation link to <strong>{unconfirmedEmail}</strong>. Please check your inbox to activate your account.
-          </p>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={handleResendConfirmation}
-            disabled={resending}
-            style={{ width: '100%', justifyContent: 'center' }}
-          >
-            {resending ? (
-              <>
-                <Loader2 size={13} className="animate-spin" />
-                Resending Confirmation...
-              </>
-            ) : (
-              'Resend Confirmation Email'
-            )}
-          </button>
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', maxWidth: '380px' }}>
+      <form noValidate onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', maxWidth: '380px' }}>
         {authMode === 'signup' && (
           <div>
             <label className="input-label">Full Name or Nickname</label>
@@ -532,6 +436,35 @@ function AccountSettings() {
           </div>
         </div>
 
+        {authMode === 'signup' && (
+          <div>
+            <label className="input-label">Confirm Password</label>
+            <div style={{ position: 'relative' }}>
+              <Lock size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)' }} />
+              <input
+                className="input-field"
+                type={showConfirmPassword ? 'text' : 'password'}
+                placeholder="•••••••• (re-enter password)"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+                disabled={loading}
+                minLength={6}
+                style={{ paddingLeft: '36px', paddingRight: '40px' }}
+              />
+              <button
+                type="button"
+                className="btn btn-icon btn-ghost btn-sm"
+                style={{ position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)' }}
+                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+              >
+                {showConfirmPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div style={{
             padding: 'var(--space-3)',
@@ -548,23 +481,7 @@ function AccountSettings() {
           </div>
         )}
 
-        {resendSuccess && (
-          <div style={{
-            padding: 'var(--space-3)',
-            background: 'var(--color-success-bg)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: 'var(--font-size-sm)',
-            color: 'var(--color-success)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--space-2)',
-          }}>
-            <Check size={14} />
-            <span>{resendSuccess}</span>
-          </div>
-        )}
-
-        {success && !unconfirmedEmail && (
+        {success && (
           <div style={{
             padding: 'var(--space-3)',
             background: 'var(--color-success-bg)',
@@ -602,7 +519,7 @@ function AccountSettings() {
             setAuthMode(authMode === 'login' ? 'signup' : 'login');
             setError('');
             setSuccess('');
-            setResendSuccess('');
+            setConfirmPassword('');
           }}
         >
           {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}

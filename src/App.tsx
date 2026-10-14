@@ -11,7 +11,8 @@ import { ConnectModal } from './components/ConnectModal';
 import { SettingsView } from './components/SettingsView';
 import { AppPreview } from './components/AppPreview';
 import { NewWorkspaceView } from './components/NewWorkspaceView';
-import { supabase, isSupabaseConfigured, loadBookmarksFromSupabase } from './lib/supabase';
+import { isSupabaseConfigured, loadBookmarksFromSupabase } from './lib/supabase';
+import { repomovaAuth } from './lib/auth';
 
 export default function App() {
   const {
@@ -29,76 +30,49 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  // Sync Supabase authentication session on mount and restore persisted session
+  // Sync Repomova authentication session on mount and restore persisted session
   useEffect(() => {
-    if (!isSupabaseConfigured) return;
-
     let isMounted = true;
 
     // Check existing active session on mount
-    supabase.auth.getSession().then(({ data: { session }, error }) => {
+    repomovaAuth.getSession().then(({ session, error }) => {
       if (!isMounted) return;
       if (error) {
         console.warn('[Repomova] Error retrieving session:', error.message);
         return;
       }
       if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email || '',
-          displayName:
-            session.user.user_metadata?.displayName ||
-            session.user.user_metadata?.full_name ||
-            session.user.email?.split('@')[0] ||
-            'User',
-          avatarUrl: session.user.user_metadata?.avatar_url,
-          createdAt: session.user.created_at,
-        });
+        setUser(session.user);
 
-        // Load persisted bookmarks from Supabase
-        loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
-          if (!isMounted || serverBookmarks.length === 0) return;
-          const current = useWorkspaceStore.getState().bookmarkedAppIds;
-          const merged = Array.from(new Set([...current, ...serverBookmarks]));
-          setBookmarkedAppIds(merged);
-        });
+        // Load persisted bookmarks from Supabase if configured
+        if (isSupabaseConfigured) {
+          loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
+            if (!isMounted || serverBookmarks.length === 0) return;
+            const current = useWorkspaceStore.getState().bookmarkedAppIds;
+            const merged = Array.from(new Set([...current, ...serverBookmarks]));
+            setBookmarkedAppIds(merged);
+          });
+        }
       }
     });
 
-    // Listen for auth state changes (sign-in, sign-out, token refresh, email confirmation)
+    // Listen for auth state changes (sign-in, sign-out, profile updates)
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
+    } = repomovaAuth.onAuthStateChange((event, session) => {
       if (!isMounted) return;
 
       if (session?.user) {
-        setUser({
-          id: session.user.id,
-          email: session.user.email || '',
-          displayName:
-            session.user.user_metadata?.displayName ||
-            session.user.user_metadata?.full_name ||
-            session.user.email?.split('@')[0] ||
-            'User',
-          avatarUrl: session.user.user_metadata?.avatar_url,
-          createdAt: session.user.created_at,
-        });
+        setUser(session.user);
 
-        // Clean up any email verification token hash from the URL bar
-        if (
-          typeof window !== 'undefined' &&
-          window.location.hash &&
-          (window.location.hash.includes('access_token=') || window.location.hash.includes('type=signup'))
-        ) {
-          window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        if (isSupabaseConfigured) {
+          loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
+            if (!isMounted || serverBookmarks.length === 0) return;
+            const current = useWorkspaceStore.getState().bookmarkedAppIds;
+            const merged = Array.from(new Set([...current, ...serverBookmarks]));
+            setBookmarkedAppIds(merged);
+          });
         }
-
-        loadBookmarksFromSupabase(session.user.id).then((serverBookmarks) => {
-          if (!isMounted || serverBookmarks.length === 0) return;
-          const current = useWorkspaceStore.getState().bookmarkedAppIds;
-          const merged = Array.from(new Set([...current, ...serverBookmarks]));
-          setBookmarkedAppIds(merged);
-        });
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
       }
