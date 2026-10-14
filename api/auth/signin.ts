@@ -29,6 +29,9 @@ interface AuthDatabase {
 
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://akplocloducmevybposx.supabase.co';
+const SUPABASE_PUB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_866PEmc9NqZ5YNOj2wyUCg_JE_aBCP0';
+
 function getDbPath(): string {
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT) {
     return path.join(os.tmpdir(), 'repomova_auth_db.json');
@@ -154,6 +157,48 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
+    // 1. Try Supabase Auth first
+    try {
+      const supaRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_PUB_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (supaRes.ok) {
+        const tokenData = await supaRes.json();
+        const user = tokenData.user;
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          user: {
+            id: user.id,
+            email: user.email,
+            displayName: user.user_metadata?.full_name || email.split('@')[0],
+            createdAt: user.created_at,
+          },
+          token: tokenData.access_token,
+          message: 'Signed in successfully!',
+        }));
+        return;
+      } else if (supaRes.status === 400) {
+        // Explicit invalid credentials from Supabase
+        const errJson = await supaRes.json().catch(() => ({}));
+        if (errJson.error_code === 'invalid_credentials' || errJson.error_description?.toLowerCase().includes('invalid login credentials')) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Invalid email or password. Please verify your credentials and try again.' }));
+          return;
+        }
+      }
+    } catch (supaErr) {
+      console.warn('[Repomova Auth] Supabase signin error, checking local db:', supaErr);
+    }
+
+    // 2. Check local database (for offline / test users)
     const db = loadAuthDb();
     const normalizedEmail = email.toLowerCase();
     const user = db.users.find((u) => u.email.toLowerCase() === normalizedEmail);

@@ -30,6 +30,10 @@ interface AuthDatabase {
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://akplocloducmevybposx.supabase.co';
+const SUPABASE_PUB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_866PEmc9NqZ5YNOj2wyUCg_JE_aBCP0';
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
+
 function getDbPath(): string {
   if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT) {
     return path.join(os.tmpdir(), 'repomova_auth_db.json');
@@ -166,6 +170,95 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
+    const displayName = rawDisplayName || email.split('@')[0] || 'Developer';
+
+    // 1. Try Supabase Auth first
+    try {
+      const supaUrl = SUPABASE_SECRET_KEY
+        ? `${SUPABASE_URL}/auth/v1/admin/users`
+        : `${SUPABASE_URL}/auth/v1/signup`;
+
+      const supaHeaders: Record<string, string> = SUPABASE_SECRET_KEY
+        ? {
+            'apikey': SUPABASE_SECRET_KEY,
+            'Authorization': `Bearer ${SUPABASE_SECRET_KEY}`,
+            'Content-Type': 'application/json',
+          }
+        : {
+            'apikey': SUPABASE_PUB_KEY,
+            'Content-Type': 'application/json',
+          };
+
+      const supaBody = SUPABASE_SECRET_KEY
+        ? {
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: { full_name: displayName },
+          }
+        : {
+            email,
+            password,
+            data: { full_name: displayName },
+          };
+
+      const supaRes = await fetch(supaUrl, {
+        method: 'POST',
+        headers: supaHeaders,
+        body: JSON.stringify(supaBody),
+      });
+
+      if (supaRes.status === 422 || supaRes.status === 400) {
+        const errJson = await supaRes.json().catch(() => ({}));
+        if (
+          errJson.error_code === 'email_exists' ||
+          errJson.msg?.toLowerCase().includes('already been registered') ||
+          errJson.msg?.toLowerCase().includes('already registered') ||
+          errJson.message?.toLowerCase().includes('already registered')
+        ) {
+          res.statusCode = 409;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'An account with this email address already exists. Please sign in instead.' }));
+          return;
+        }
+      }
+
+      if (supaRes.ok) {
+        const supaUser = await supaRes.json();
+
+        // Sign in immediately to acquire access token
+        const tokenRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_PUB_KEY,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email, password }),
+        });
+
+        const tokenData = await tokenRes.json().catch(() => ({}));
+        const token = tokenData.access_token || crypto.randomBytes(32).toString('hex');
+        const userObj = supaUser.user || supaUser;
+
+        res.statusCode = 201;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          user: {
+            id: userObj.id,
+            email: userObj.email,
+            displayName: userObj.user_metadata?.full_name || displayName,
+            createdAt: userObj.created_at || new Date().toISOString(),
+          },
+          token,
+          message: 'Account created and signed in successfully!',
+        }));
+        return;
+      }
+    } catch (supaErr) {
+      console.warn('[Repomova Auth] Supabase signup unavailable, falling back to local db:', supaErr);
+    }
+
+    // 2. Fallback to local storage (for offline / test environments)
     const db = loadAuthDb();
     const normalizedEmail = email.toLowerCase();
     const existing = db.users.find((u) => u.email.toLowerCase() === normalizedEmail);
@@ -180,7 +273,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     const { salt, hash } = hashPassword(password);
     const now = new Date().toISOString();
     const userId = `usr_${crypto.randomUUID()}`;
-    const displayName = rawDisplayName || email.split('@')[0] || 'Developer';
 
     const newUser: StoredUser = {
       id: userId,

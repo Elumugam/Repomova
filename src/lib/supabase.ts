@@ -19,16 +19,21 @@ function sanitizeEnvValue(val: unknown): string {
   return trimmed;
 }
 
+const DEFAULT_SUPABASE_URL = 'https://akplocloducmevybposx.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'sb_publishable_866PEmc9NqZ5YNOj2wyUCg_JE_aBCP0';
+
 // Support both Vite client-side (import.meta.env) and Node/testing (process.env)
 const rawUrl = sanitizeEnvValue(
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SUPABASE_URL) ||
-  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL))
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)) ||
+  DEFAULT_SUPABASE_URL
 );
 
 // Support both standard VITE_SUPABASE_ANON_KEY and VITE_SUPABASE_PUBLISHABLE_KEY without duplicate config
 const rawKey = sanitizeEnvValue(
   (typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)) ||
-  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY))
+  (typeof process !== 'undefined' && process.env && (process.env.VITE_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY)) ||
+  DEFAULT_SUPABASE_KEY
 );
 
 export function isValidSupabaseUrl(url: string): boolean {

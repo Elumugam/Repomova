@@ -3,16 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-interface StoredUser {
-  id: string;
-  email: string;
-  displayName: string;
-  avatarUrl?: string;
-  passwordHash: string;
-  salt: string;
-  createdAt: string;
-  updatedAt: string;
-}
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://akplocloducmevybposx.supabase.co';
+const SUPABASE_PUB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_866PEmc9NqZ5YNOj2wyUCg_JE_aBCP0';
 
 interface StoredSession {
   token: string;
@@ -22,7 +14,7 @@ interface StoredSession {
 }
 
 interface AuthDatabase {
-  users: StoredUser[];
+  users: any[];
   sessions: StoredSession[];
 }
 
@@ -92,6 +84,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   try {
     if (token) {
+      fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          'apikey': SUPABASE_PUB_KEY,
+          'Authorization': `Bearer ${token}`,
+        },
+      }).catch(() => {});
+
       const db = loadAuthDb();
       db.sessions = (db.sessions || []).filter((s) => s.token !== token);
       saveAuthDb(db);

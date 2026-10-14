@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://akplocloducmevybposx.supabase.co';
+const SUPABASE_PUB_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_866PEmc9NqZ5YNOj2wyUCg_JE_aBCP0';
+
 interface StoredUser {
   id: string;
   email: string;
@@ -80,6 +83,34 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   try {
+    // 1. Try Supabase verification
+    try {
+      const supaRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        headers: {
+          'apikey': SUPABASE_PUB_KEY,
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (supaRes.ok) {
+        const supaUser = await supaRes.json();
+        const safeUser = {
+          id: supaUser.id,
+          email: supaUser.email,
+          displayName: supaUser.user_metadata?.full_name || supaUser.email?.split('@')[0],
+          avatarUrl: supaUser.user_metadata?.avatar_url,
+          createdAt: supaUser.created_at,
+        };
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ user: safeUser, session: { token, user: safeUser } }));
+        return;
+      }
+    } catch {
+      // Check local db
+    }
+
+    // 2. Check local database
     const db = loadAuthDb();
     const now = new Date().toISOString();
     const session = (db.sessions || []).find((s) => s.token === token && s.expiresAt > now);
