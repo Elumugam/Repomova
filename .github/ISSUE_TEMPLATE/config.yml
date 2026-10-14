@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Reporting
+    url: https://github.com/Elumugam/Repomova/security/advisories
+    about: Please report security vulnerabilities privately rather than opening a public issue.
+  - name: Contributing Guidelines
+    url: https://github.com/Elumugam/Repomova/blob/main/CONTRIBUTING.md
+    about: Read how to set up the project locally and submit contributions.

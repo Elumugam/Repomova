@@ -7,13 +7,29 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+.pnp
+.pnp.js
+
+# Build and Production Outputs
 dist
+dist-ssr
+*.tsbuildinfo
+
+# Environment variables and secrets
 *.local
 .env
 .env.*
 !.env.example
+
+# Local Repomova runtime data & caches
 .repomova
+
+# Testing and Coverage
+coverage/
+test-results/
+.nyc_output
 
 # Editor directories and files
 .vscode/*
@@ -25,3 +41,5 @@ dist
 *.njsproj
 *.sln
 *.sw?
+*.sublime-workspace
+*.sublime-project
